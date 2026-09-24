@@ -1,0 +1,23 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Testing infrastructure
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local configuration files
+.env
+.venv
+env/
+venv/
+ENV/
+
+# System / IDE specific files
+.DS_Store
+.idea/
+.vscode/
+*.swp

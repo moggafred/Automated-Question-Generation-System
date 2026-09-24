@@ -1,0 +1,16 @@
+services:
+  aqg-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aqg_api_service
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DEBUG=False
+      - PORT=8000
+    volumes:
+      - .:/app
+    restart: unless-stopped
