@@ -1,77 +1,128 @@
-import logging
+"""AQG — AI-Powered Educational Assessment and Study Platform.
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+Application entry point. This module owns only cross-cutting concerns:
+
+* building the FastAPI application and its lifespan (database initialisation)
+* installing the rate-limit and error-translation middleware
+* registering the API routers
+* serving the single-page frontend from ``static/``
+
+All request handling lives in ``api/routers``, business logic in ``services/``,
+schemas in ``models/`` and configuration in ``config/``.
+"""
+
+from __future__ import annotations
+
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path as FilePath
+
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("aqg")
+from api.deps import install_exception_handlers
+from api.router import register_routers
 from config.settings import settings
-from services.parser import DocumentParserService
-from services.generator import QuestionGeneratorService
-from services.evaluator import QuizEvaluationAgent
-from services.retriever import DocumentRetriever
+from services.database import async_init_db
+from services.rate_limit import get_limiter
 
-app = FastAPI(title="Automated Question Generation API Engine", version="1.0.0", debug=settings.DEBUG)
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("aqg")
 
-# Setup framework configuration allocations for core engines
-generator_service = QuestionGeneratorService()
+PROJECT_ROOT = FilePath(__file__).resolve().parent
+STATIC_DIR = PROJECT_ROOT / "static"
 
-# 7. Add a /health endpoint returning {"status": "ok"}
-@app.get("/health", status_code=200)
-async def health_check():
-    return {"status": "ok"}
+#: Paths excluded from rate limiting so static assets and probes stay cheap.
+#: A page load pulls in the shell plus ~20 modules, which must not eat the API budget.
+RATE_LIMIT_EXEMPT_PREFIXES = (
+    "/health",
+    "/api/status",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
+    "/static",
+    "/assets",
+    "/css",
+    "/js",
+    "/favicon",
+    "/logo",
+)
 
-@app.post("/api/v1/generate")
-async def api_generate_questions(
-    file: UploadFile = File(...),
-    type: str = Form("multiple-choice"),
-    count: int = Form(3),
-    topic: str = Form("")
-):
-    # Ensure parameter validation boundaries
-    if count < 1 or count > 10:
-        raise HTTPException(status_code=400, detail="Count configuration constraint violation: Please select between 1 and 10 questions.")
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Initialises persistence on boot and logs a clean shutdown."""
     try:
-        file_bytes = b""
-        while chunk := await file.read(1024 * 1024):
-            file_bytes += chunk
-            if len(file_bytes) > settings.MAX_UPLOAD_SIZE:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"Uploaded file exceeds the {settings.MAX_UPLOAD_SIZE // (1024 * 1024)}MB size limit.",
-                )
-        raw_text = DocumentParserService.extract_text(file_bytes, file.filename)
+        await async_init_db()
+        logger.info("Persistence layer online at %s", settings.DATABASE_PATH)
+    except Exception as exc:  # noqa: BLE001 - the API must still boot to report status
+        logger.error("Database initialisation failed: %s", exc)
+    yield
+    logger.info("AQG shutting down")
 
-        # Process text chunks
-        chunks = DocumentParserService.chunk_text(raw_text)
-        if not chunks:
-            raise HTTPException(status_code=400, detail="Document contains insufficient alphanumeric depth to form structured context grids.")
 
-        # 1. Wire the retriever: ingest the chunk indexes for semantic retrieval
-        retriever = DocumentRetriever(dim=settings.RAG_EMBED_DIM)
-        retriever.index_chunks(chunks)
+app = FastAPI(
+    title=f"{settings.APP_NAME} — {settings.APP_TAGLINE}",
+    version=settings.APP_VERSION,
+    description=settings.APP_DESCRIPTION,
+    debug=settings.DEBUG,
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
 
-        # 2. Honor the topic param: derive the retrieval query from it
-        search_query = topic.strip() if topic.strip() else "key concepts and main summaries"
-        relevant_chunks = retriever.retrieve(query=search_query, top_k=settings.RAG_TOP_K)
-        combined_context = "\n\n".join(relevant_chunks) if relevant_chunks else chunks[0]
 
-        # Generate questions from the retrieved context nodes
-        raw_quiz = generator_service.generate_quiz(combined_context, type, count)
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    """Applies a sliding-window rate limit keyed by client address."""
+    if not settings.RATE_LIMIT_ENABLED or request.method == "OPTIONS":
+        return await call_next(request)
 
-        # Apply local validation guardrail filters
-        sanitized_quiz = QuizEvaluationAgent.audit_assessment(raw_quiz)
-        return sanitized_quiz
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Unhandled failure during question generation: %s", e)
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+    if any(request.url.path.startswith(prefix) for prefix in RATE_LIMIT_EXEMPT_PREFIXES):
+        return await call_next(request)
 
-# Mount Static Client UI interface engines
-app.mount("/", StaticFiles(directory="static", html=True), name="static")
+    client = request.client.host if request.client else "unknown"
+    allowed, remaining, retry_after = get_limiter().allow(client)
+
+    if not allowed:
+        logger.warning("Rate limit hit for %s on %s", client, request.url.path)
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "rate_limited",
+                "detail": f"Too many requests. Please wait {retry_after} seconds and try again.",
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    response = await call_next(request)
+    response.headers["X-RateLimit-Limit"] = str(settings.RATE_LIMIT_REQUESTS)
+    response.headers["X-RateLimit-Remaining"] = str(remaining)
+    return response
+
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    """Adds conservative security headers to every response."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    return response
+
+
+install_exception_handlers(app)
+register_routers(app)
+
+# The SPA is mounted last so it never shadows the API routes above.
+app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="0.0.0.0", port=settings.PORT, reload=settings.DEBUG)

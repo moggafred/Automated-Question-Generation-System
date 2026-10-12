@@ -21,3 +21,6 @@ ENV/
 .idea/
 .vscode/
 *.swp
+
+# Local run/test logs
+*.log

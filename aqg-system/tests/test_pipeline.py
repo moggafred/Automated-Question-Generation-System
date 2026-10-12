@@ -4,6 +4,7 @@ from unittest.mock import patch
 import main as main_module
 from main import app
 from config.settings import settings
+from services.retriever import RetrievedChunk
 
 client = TestClient(app)
 
@@ -26,7 +27,7 @@ def test_generate_quiz_rejects_oversized_upload():
         response = client.post("/api/v1/generate", data=payload, files=files)
 
         assert response.status_code == 413
-        assert "size limit" in response.json()["detail"]
+        assert "larger than" in response.json()["detail"]
 
 
 def test_file_upload_oversize_limit_returns_413():
@@ -39,7 +40,7 @@ def test_file_upload_oversize_limit_returns_413():
     response = client.post("/api/v1/generate", data=payload, files=files)
 
     assert response.status_code == 413
-    assert "size limit" in response.json()["detail"]
+    assert "larger than" in response.json()["detail"]
 
 
 def test_generate_quiz_success_with_retrieval_and_topic():
@@ -50,10 +51,13 @@ def test_generate_quiz_success_with_retrieval_and_topic():
         "The light-dependent reactions produce ATP and NADPH which fuel the Calvin cycle."
     )
 
-    with patch("services.retriever.DocumentRetriever.retrieve") as mock_retrieve, \
+    with patch("services.retriever.DocumentRetriever.build_context") as mock_build_context, \
          patch("services.generator.QuestionGeneratorService.generate_quiz") as mock_generate:
 
-        mock_retrieve.return_value = ["Photosynthesis converts sunlight into chemical energy inside chloroplasts."]
+        mock_build_context.return_value = (
+            "Photosynthesis converts sunlight into chemical energy inside chloroplasts.",
+            [RetrievedChunk(text="Photosynthesis converts sunlight into chemical energy inside chloroplasts.", score=0.9, index=0)],
+        )
         mock_generate.return_value = {
             "quiz_title": "Photosynthesis Assessment",
             "questions": [
@@ -86,11 +90,11 @@ def test_generate_quiz_success_with_retrieval_and_topic():
         assert json_data["quiz_title"] == "Photosynthesis Assessment"
         assert len(json_data["questions"]) == 2
 
-        # Verify the retriever was explicitly called with the topic as the query string
-        mock_retrieve.assert_called_once_with(
-            query="Photosynthesis",
-            top_k=settings.RAG_TOP_K,
-        )
+        # The retriever must be queried with the topic supplied by the learner.
+        from services.generation import default_retrieval_query
+
+        assert mock_build_context.call_count == 1
+        assert mock_build_context.call_args.args[0] == default_retrieval_query("Photosynthesis")
 
 
 def test_generate_quiz_without_topic_uses_default_query():
@@ -100,10 +104,13 @@ def test_generate_quiz_without_topic_uses_default_query():
         "Energy transfers always increase total system entropy over time."
     )
 
-    with patch("services.retriever.DocumentRetriever.retrieve") as mock_retrieve, \
+    with patch("services.retriever.DocumentRetriever.build_context") as mock_build_context, \
          patch("services.generator.QuestionGeneratorService.generate_quiz") as mock_generate:
 
-        mock_retrieve.return_value = ["Thermodynamics describes heat flow and the second law of energy."]
+        mock_build_context.return_value = (
+            "Thermodynamics describes heat flow and the second law of energy.",
+            [RetrievedChunk(text="Thermodynamics describes heat flow and the second law of energy.", score=0.9, index=0)],
+        )
         mock_generate.return_value = {
             "quiz_title": "Thermodynamics Quiz",
             "questions": [
@@ -124,14 +131,15 @@ def test_generate_quiz_without_topic_uses_default_query():
         response = client.post("/api/v1/generate", data=payload, files=files)
 
         assert response.status_code == 200
-        mock_retrieve.assert_called_once_with(
-            query="key concepts and main summaries",
-            top_k=settings.RAG_TOP_K,
-        )
+
+        from services.generation import default_retrieval_query
+
+        assert mock_build_context.call_count == 1
+        assert mock_build_context.call_args.args[0] == default_retrieval_query("")
 
 
 def test_generate_quiz_fails_loudly_on_llm_error():
-    """An upstream generation failure must raise a proper HTTP 500 instead of a mocked quiz."""
+    """An upstream generation failure must surface a 502 without leaking internals."""
     mock_source_text = (
         "Biology is the study of living organisms, their structure, function and evolution."
     )
@@ -144,6 +152,8 @@ def test_generate_quiz_fails_loudly_on_llm_error():
 
         response = client.post("/api/v1/generate", data=payload, files=files)
 
-        # Fail loudly: the API layer must surface an explicit HTTP 500 with a generic message
-        assert response.status_code == 500
-        assert response.json()["detail"] == "Internal Server Error"
+        # Fail loudly, but never echo the upstream error back to the caller.
+        assert response.status_code == 502
+        assert response.json()["error"] == "generation_failed"
+        assert "timed out" not in response.text
+        assert "quota" not in response.text

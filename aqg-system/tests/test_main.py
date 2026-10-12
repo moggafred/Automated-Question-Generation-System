@@ -10,7 +10,10 @@ def test_static_index_resolution():
     """Verify static hosting binds match expected asset paths index configurations properly."""
     response = client.get("/")
     assert response.status_code == 200
-    assert "AQG Engine" in response.text
+    assert "/js/app.js" in response.text
+    assert 'id="app-shell"' in response.text
+    assert 'data-nav="dashboard"' in response.text
+
 
 @patch("services.generator.QuestionGeneratorService.generate_quiz")
 def test_generation_endpoint_lifecycle(mock_generator):
@@ -28,7 +31,7 @@ def test_generation_endpoint_lifecycle(mock_generator):
             }
         ]
     }
-    
+
     # Pack parameters inside boundaries
     payload = {
         "type": "multiple-choice",
@@ -37,50 +40,57 @@ def test_generation_endpoint_lifecycle(mock_generator):
     file_payload = {
         "file": ("test_context.txt", b"Light travel metric velocity constants are absolute configurations fields.", "text/plain")
     }
-    
+
     response = client.post("/api/v1/generate", data=payload, files=file_payload)
     assert response.status_code == 200
     json_data = response.json()
     assert json_data["quiz_title"] == "Mock Physics Assessment"
     assert len(json_data["questions"]) == 1
-    assert json_data["questions"][0]["correct_answer"] == "299,792 km/s"
+
+    # The answer key must never reach the client before submission.
+    assert "correct_answer" not in json_data["questions"][0]
+    assert json_data["questions"][0]["options"][0]["text"] == "299,792 km/s"
 
 
 def test_generation_count_boundary_validation():
-    """Count values outside the 1-10 boundary must be rejected with 400."""
+    """Count values outside the 1-20 boundary must be rejected with 400."""
     file_payload = {
         "file": ("boundary.txt", b"Some document body text used for parsing contexts.", "text/plain")
     }
     response = client.post("/api/v1/generate", data={"type": "multiple-choice", "count": 0}, files=file_payload)
     assert response.status_code == 400
 
-    response = client.post("/api/v1/generate", data={"type": "multiple-choice", "count": 11}, files=file_payload)
+    response = client.post("/api/v1/generate", data={"type": "multiple-choice", "count": 21}, files=file_payload)
     assert response.status_code == 400
 
 
-def test_generation_endpoint_topic_parameter():
+@patch("services.generator.QuestionGeneratorService.generate_quiz")
+def test_generation_endpoint_topic_parameter(mock_generator):
     """Optional RAG topic steering must be accepted without breaking the pipeline."""
-    with patch("services.generator.QuestionGeneratorService.generate_quiz") as mock_generator:
-        mock_generator.return_value = {
-            "quiz_title": "Themed Quiz",
-            "questions": [
-                {
-                    "id": 1,
-                    "type": "short-answer",
-                    "question": "State the core principle.",
-                    "options": [],
-                    "correct_answer": "Conservation of energy",
-                    "explanation": "Derived from the retrieved context windows."
-                }
-            ]
-        }
-        payload = {"type": "short-answer", "count": 1, "topic": "conservation"}
-        file_payload = {
-            "file": ("topic.txt", b"Conservation of energy governs energy transfers in closed systems.", "text/plain")
-        }
-        response = client.post("/api/v1/generate", data=payload, files=file_payload)
-        assert response.status_code == 200
-        assert response.json()["questions"][0]["correct_answer"] == "Conservation of energy"
+    mock_generator.return_value = {
+        "quiz_title": "Themed Quiz",
+        "questions": [
+            {
+                "id": 1,
+                "type": "short-answer",
+                "question": "State the core principle.",
+                "options": [],
+                "correct_answer": "Conservation of energy",
+                "explanation": "Derived from the retrieved context windows."
+            }
+        ]
+    }
+    payload = {"type": "short-answer", "count": 1, "topic": "conservation"}
+    file_payload = {
+        "file": ("topic.txt", b"Conservation of energy governs energy transfers in closed systems.", "text/plain")
+    }
+    response = client.post("/api/v1/generate", data=payload, files=file_payload)
+    assert response.status_code == 200
+
+    body = response.json()
+    assert body["topic"] == "conservation"
+    assert body["questions"][0]["question"] == "State the core principle."
+    assert "correct_answer" not in body["questions"][0]
 
 
 def test_retriever_ranked_context_return():

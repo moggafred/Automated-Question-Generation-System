@@ -9,6 +9,8 @@ document.addEventListener("DOMContentLoaded", () => {
     const quizResultWrapper = document.getElementById("quizResultWrapper");
     const questionsContainer = document.getElementById("questionsContainer");
     const renderedQuizTitle = document.getElementById("renderedQuizTitle");
+    const renderedQuizMeta = document.getElementById("renderedQuizMeta");
+    const renderedQuizId = document.getElementById("renderedQuizId");
 
     const themeToggle = document.getElementById("themeToggle");
     const themeIcon = document.getElementById("themeIcon");
@@ -109,6 +111,15 @@ document.addEventListener("DOMContentLoaded", () => {
     function renderQuizResults(data) {
         renderedQuizTitle.textContent = data.quiz_title || "Generated Assessment Suite";
         questionsContainer.innerHTML = "";
+
+        // Surface the persistence tracking UUID so the quiz can be re-fetched from history
+        if (data.quiz_id) {
+            renderedQuizId.textContent = data.quiz_id;
+            renderedQuizMeta.classList.remove("hidden");
+        } else {
+            renderedQuizId.textContent = "";
+            renderedQuizMeta.classList.add("hidden");
+        }
 
         if (!data.questions || data.questions.length === 0) {
             questionsContainer.innerHTML = `<div class="p-4 bg-amber-50 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/20 rounded-xl text-sm">No valid evaluation metrics parsed. Try adapting text contexts metrics.</div>`;

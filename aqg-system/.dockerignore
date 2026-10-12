@@ -7,3 +7,8 @@ venv/
 .git/
 .gitignore
 README.md
+
+# Local SQLite persistence artifacts must never be baked into the image
+*.db
+*.db-wal
+*.db-shm

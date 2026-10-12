@@ -11,6 +11,14 @@ services:
     environment:
       - DEBUG=False
       - PORT=8000
+      # Anchored inside the container so the WAL sidecar files land on the
+      # bind-mounted volume and survive a rebuild.
+      - DATABASE_PATH=/app/data/quizzes.db
     volumes:
-      - .:/app
+      # The database lives on its own mount: WAL mode writes quizzes.db-wal and
+      # quizzes.db-shm next to the file, so a single-file mount would lose them.
+      - ./data:/app/data
+      # The source is mounted read-only so the host project cannot be mutated by
+      # the container while still exposing static/ to the app.
+      - .:/app:ro
     restart: unless-stopped

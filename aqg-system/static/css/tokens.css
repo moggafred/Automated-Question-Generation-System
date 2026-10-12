@@ -1,0 +1,208 @@
+/* ==========================================================================
+   AQG design tokens
+   A single source of truth for colour, type, spacing, radius and elevation.
+   Light is the default theme; the dark palette is applied via
+   [data-theme="dark"] so the theme toggle never needs a second stylesheet.
+   ========================================================================== */
+
+:root {
+  /* -- Brand palette -------------------------------------------------- */
+  --brand-50:  #eef2ff;
+  --brand-100: #e0e7ff;
+  --brand-200: #c7d2fe;
+  --brand-300: #a5b4fc;
+  --brand-400: #818cf8;
+  --brand-500: #6366f1;
+  --brand-600: #4f46e5;
+  --brand-700: #4338ca;
+  --brand-800: #3730a3;
+  --brand-900: #312e81;
+
+  --accent-400: #2dd4bf;
+  --accent-500: #14b8a6;
+  --accent-600: #0d9488;
+
+  /* -- Semantic status ------------------------------------------------ */
+  --success-50:  #ecfdf5;
+  --success-200: #a7f3d0;
+  --success-600: #059669;
+  --success-700: #047857;
+
+  --warning-50:  #fffbeb;
+  --warning-200: #fde68a;
+  --warning-600: #d97706;
+  --warning-700: #b45309;
+
+  --danger-50:  #fef2f2;
+  --danger-200: #fecaca;
+  --danger-600: #dc2626;
+  --danger-700: #b91c1c;
+
+  --info-50:  #eff6ff;
+  --info-200: #bfdbfe;
+  --info-600: #2563eb;
+  --info-700: #1d4ed8;
+
+  /* -- Typography ----------------------------------------------------- */
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, "Helvetica Neue",
+    Arial, "Noto Sans", sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono",
+    monospace;
+
+  --text-2xs: 0.6875rem;  /* 11px */
+  --text-xs:  0.75rem;    /* 12px */
+  --text-sm:  0.8125rem;  /* 13px */
+  --text-md:  0.9375rem;  /* 15px */
+  --text-lg:  1.0625rem;  /* 17px */
+  --text-xl:  1.25rem;    /* 20px */
+  --text-2xl: 1.5rem;     /* 24px */
+  --text-3xl: 1.875rem;   /* 30px */
+  --text-4xl: 2.25rem;    /* 36px */
+
+  --leading-tight: 1.2;
+  --leading-snug: 1.35;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.75;
+
+  /* -- Spacing scale -------------------------------------------------- */
+  --space-1:  0.25rem;
+  --space-2:  0.5rem;
+  --space-3:  0.75rem;
+  --space-4:  1rem;
+  --space-5:  1.25rem;
+  --space-6:  1.5rem;
+  --space-8:  2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* -- Radius --------------------------------------------------------- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 28px;
+  --radius-full: 9999px;
+
+  /* -- Layout --------------------------------------------------------- */
+  --sidebar-width: 264px;
+  --sidebar-collapsed: 76px;
+  --topbar-height: 64px;
+  --mobile-nav-height: 64px;
+  --content-max: 1280px;
+
+  /* -- Motion --------------------------------------------------------- */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  /* -- Semantic surface tokens (light) -------------------------------- */
+  --surface-page: #f7f8fc;
+  --surface-raised: #ffffff;
+  --surface-sunken: #f1f3f9;
+  --surface-overlay: rgba(15, 23, 42, 0.45);
+  --surface-inverse: #111827;
+
+  --border-subtle: #e6e9f2;
+  --border-default: #d5dae8;
+  --border-strong: #b9c1d6;
+
+  --text-primary: #131a2b;
+  --text-secondary: #4a5468;
+  --text-tertiary: #6b7690;
+  --text-inverse: #ffffff;
+  --text-link: var(--brand-700);
+
+  --primary: var(--brand-600);
+  --primary-hover: var(--brand-700);
+  --primary-active: var(--brand-800);
+  --primary-soft: var(--brand-50);
+  --primary-soft-border: var(--brand-200);
+  --primary-contrast: #ffffff;
+
+  --focus-ring: 0 0 0 3px rgba(99, 102, 241, 0.4);
+  --focus-ring-offset: 0 0 0 2px var(--surface-raised);
+
+  /* -- Elevation ------------------------------------------------------ */
+  --shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.05);
+  --shadow-sm: 0 1px 3px rgba(16, 24, 40, 0.08), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 8px -2px rgba(16, 24, 40, 0.08), 0 2px 4px -2px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 12px 16px -4px rgba(16, 24, 40, 0.1), 0 4px 6px -2px rgba(16, 24, 40, 0.03);
+  --shadow-xl: 0 20px 24px -4px rgba(16, 24, 40, 0.12), 0 8px 8px -4px rgba(16, 24, 40, 0.04);
+  --shadow-brand: 0 8px 20px -6px rgba(79, 70, 229, 0.4);
+
+  --scrim: rgba(15, 23, 42, 0.5);
+}
+
+/* ==========================================================================
+   Dark theme
+   ========================================================================== */
+[data-theme="dark"] {
+  --surface-page: #0b0f1a;
+  --surface-raised: #141a29;
+  --surface-sunken: #0f1420;
+  --surface-overlay: rgba(0, 0, 0, 0.65);
+  --surface-inverse: #f8fafc;
+
+  --border-subtle: #232b3d;
+  --border-default: #2f3850;
+  --border-strong: #414d69;
+
+  --text-primary: #f1f4fb;
+  --text-secondary: #b6c0d4;
+  --text-tertiary: #8c97af;
+  --text-inverse: #0b0f1a;
+  --text-link: var(--brand-300);
+
+  --primary: var(--brand-500);
+  --primary-hover: var(--brand-400);
+  --primary-active: var(--brand-300);
+  --primary-soft: rgba(99, 102, 241, 0.14);
+  --primary-soft-border: rgba(129, 140, 248, 0.34);
+  --primary-contrast: #ffffff;
+
+  --success-50: rgba(5, 150, 105, 0.16);
+  --success-200: rgba(5, 150, 105, 0.4);
+  --success-600: #34d399;
+  --success-700: #6ee7b7;
+
+  --warning-50: rgba(217, 119, 6, 0.16);
+  --warning-200: rgba(217, 119, 6, 0.4);
+  --warning-600: #fbbf24;
+  --warning-700: #fcd34d;
+
+  --danger-50: rgba(220, 38, 38, 0.16);
+  --danger-200: rgba(220, 38, 38, 0.4);
+  --danger-600: #f87171;
+  --danger-700: #fca5a5;
+
+  --info-50: rgba(37, 99, 235, 0.16);
+  --info-200: rgba(37, 99, 235, 0.4);
+  --info-600: #60a5fa;
+  --info-700: #93c5fd;
+
+  --brand-50: rgba(99, 102, 241, 0.14);
+  --brand-100: rgba(99, 102, 241, 0.2);
+  --brand-200: rgba(129, 140, 248, 0.32);
+
+  --focus-ring: 0 0 0 3px rgba(129, 140, 248, 0.45);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 10px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 14px 22px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 22px 30px rgba(0, 0, 0, 0.6);
+  --shadow-brand: 0 8px 22px -6px rgba(99, 102, 241, 0.5);
+
+  --scrim: rgba(0, 0, 0, 0.7);
+}
+
+/* Respect the operating system preference on first load. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+  }
+}

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AQG">
+  <defs>
+    <linearGradient id="aqg-mark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6366f1" />
+      <stop offset="100%" stop-color="#3730a3" />
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#aqg-mark)" />
+  <g fill="none" stroke="#ffffff" stroke-width="3.4" stroke-linecap="round">
+    <path d="M14 24h7" />
+    <path d="M14 32h9" />
+    <path d="M14 40h6" />
+    <path d="M46 24a16 16 0 1 0 0 16" />
+    <path d="M46 46h-7" stroke-opacity="0.55" />
+  </g>
+  <circle cx="40" cy="24" r="3.2" fill="#2dd4bf" />
+</svg>
