@@ -167,8 +167,9 @@ function syncSearchWithRoute() {
 function wireShellEvents() {
   $('#theme-toggle')?.addEventListener('click', () => {
     toggleTheme();
-    syncThemeButton();
   });
+
+  document.addEventListener('aqg:themechange', syncThemeButton);
 
   $('#sidebar-collapse')?.addEventListener('click', () => {
     const shell = $('#app-shell');

@@ -55,12 +55,12 @@ export default async function render() {
                 Light and dark both meet contrast requirements. Your choice is stored locally.
               </p>
             </div>
-            <div class="switch">
+            <label class="switch">
               <input type="checkbox" id="theme-switch" ${getTheme() === 'dark' ? 'checked' : ''}
                 aria-label="Use the dark theme" />
               <span class="switch__track" aria-hidden="true"></span>
               <span class="switch__thumb" aria-hidden="true"></span>
-            </div>
+            </label>
           </div>
           <div class="settings-row">
             <div>
@@ -166,6 +166,8 @@ export default async function render() {
       </div>
     </section>`;
 
+  let detachThemeListener = null;
+
   return {
     title: 'Settings',
     breadcrumb: 'Preferences and platform status',
@@ -173,7 +175,14 @@ export default async function render() {
     mount(root) {
       hydrateIcons(root, icon);
 
-      root.querySelector('#theme-switch').addEventListener('change', (event) => {
+      const themeSwitch = root.querySelector('#theme-switch');
+      const syncThemeSwitch = () => {
+        if (themeSwitch) themeSwitch.checked = getTheme() === 'dark';
+      };
+      document.addEventListener('aqg:themechange', syncThemeSwitch);
+      detachThemeListener = () => document.removeEventListener('aqg:themechange', syncThemeSwitch);
+
+      themeSwitch.addEventListener('change', (event) => {
         setTheme(event.target.checked ? 'dark' : 'light');
         toastSuccess(`Switched to the ${event.target.checked ? 'dark' : 'light'} theme.`);
       });
@@ -185,6 +194,9 @@ export default async function render() {
         setSidebarCollapsed(collapsed);
         toastSuccess(collapsed ? 'Sidebar collapsed.' : 'Sidebar expanded.');
       });
+    },
+    cleanup() {
+      detachThemeListener?.();
     },
   };
 }

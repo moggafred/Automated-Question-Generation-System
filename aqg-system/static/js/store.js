@@ -59,6 +59,7 @@ export function setTheme(theme) {
   const value = theme === 'dark' ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', value);
   writeText(KEYS.theme, value);
+  document.dispatchEvent(new CustomEvent('aqg:themechange', { detail: value }));
   return value;
 }
 
