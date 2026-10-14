@@ -30,7 +30,9 @@
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
 
-  <div class="app-shell" id="app-shell">
+  <div class="auth-gate" id="auth-gate" hidden></div>
+
+  <div class="app-shell" id="app-shell" data-auth="pending">
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
       <a class="sidebar__brand" href="#/dashboard" aria-label="AQG home">
         <span class="sidebar__logo" id="brand-logo" aria-hidden="true">AQ</span>
@@ -125,6 +127,24 @@
         <a class="icon-button" href="#/help" aria-label="Open help and guide">
           <span data-icon-slot="help" aria-hidden="true"></span>
         </a>
+
+        <div class="user-menu" id="user-menu">
+          <button
+            type="button"
+            class="user-menu__toggle"
+            id="user-menu-toggle"
+            aria-haspopup="menu"
+            aria-expanded="false"
+          >
+            <span class="avatar" id="user-avatar" aria-hidden="true"></span>
+            <span class="user-menu__meta">
+              <span class="user-menu__name" id="user-name">Account</span>
+              <span class="user-menu__sub" id="user-sub"></span>
+            </span>
+            <span data-icon-slot="chevronDown" aria-hidden="true"></span>
+          </button>
+          <div class="user-menu__panel" id="user-menu-panel" role="menu" hidden></div>
+        </div>
       </div>
     </header>
 

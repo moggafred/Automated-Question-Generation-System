@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Path, Query
+from fastapi import APIRouter, Body, Depends, Path, Query
 
 from api.deps import logger
+from api.security import require_user
 from errors import AssessmentError, DatabaseError, QuizNotFoundError
 from models.assessment import AssessmentSubmission
 from models.question import QUESTION_TYPE_LABELS
+from models.user import AuthenticatedUser
 from services.assessment import grade_and_persist
 from services.database import (
     async_count_assessment_attempts,
@@ -26,8 +28,8 @@ QUIZ_ID_DESCRIPTION = Path(..., min_length=1, description="The UUID4 tracking ID
 ATTEMPT_ID_DESCRIPTION = Path(..., min_length=1, description="The UUID4 tracking ID of the attempt.")
 
 
-async def _require_quiz(quiz_id: str) -> dict:
-    record = await async_get_quiz_by_id(quiz_id)
+async def _require_quiz(quiz_id: str, user_id: str) -> dict:
+    record = await async_get_quiz_by_id(quiz_id, user_id=user_id)
     if record is None:
         raise QuizNotFoundError()
     return record
@@ -37,6 +39,7 @@ async def _require_quiz(quiz_id: str) -> dict:
 async def submit_assessment(
     quiz_id: str = QUIZ_ID_DESCRIPTION,
     submission: AssessmentSubmission = Body(...),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Grades a submission against the stored assessment and records the attempt.
 
@@ -46,7 +49,7 @@ async def submit_assessment(
     if not submission.answers:
         raise AssessmentError("Please answer at least one question before submitting.")
 
-    record = await _require_quiz(quiz_id)
+    record = await _require_quiz(quiz_id, user.id)
     assessment = Assessment.from_payload(record["quiz_data"])
 
     if not assessment.questions:
@@ -63,6 +66,7 @@ async def submit_assessment(
             submission,
             quiz_id=quiz_id,
             quiz_topic=record["topic"],
+            user_id=user.id,
         )
     except DatabaseError:
         raise
@@ -78,10 +82,13 @@ async def assessment_history(
     limit: int = Query(20, ge=1, le=200, description="Maximum number of attempts to return."),
     offset: int = Query(0, ge=0, description="Pagination offset."),
     quiz_id: str = Query("", description="Optional filter to a single assessment."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Returns completed attempts, newest first."""
-    attempts = await async_list_assessment_attempts(limit=limit, offset=offset, quiz_id=quiz_id or None)
-    total = await async_count_assessment_attempts(quiz_id=quiz_id or None)
+    attempts = await async_list_assessment_attempts(
+        limit=limit, offset=offset, quiz_id=quiz_id or None, user_id=user.id
+    )
+    total = await async_count_assessment_attempts(quiz_id=quiz_id or None, user_id=user.id)
 
     return {
         "total": total,
@@ -93,17 +100,23 @@ async def assessment_history(
 
 
 @router.get("/assessment/{quiz_id}/attempts", summary="Attempts recorded for one assessment")
-async def attempts_for_quiz(quiz_id: str = QUIZ_ID_DESCRIPTION) -> dict:
+async def attempts_for_quiz(
+    quiz_id: str = QUIZ_ID_DESCRIPTION,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Returns every attempt recorded against a single assessment."""
-    await _require_quiz(quiz_id)
-    attempts = await async_list_assessment_attempts(limit=200, quiz_id=quiz_id)
+    await _require_quiz(quiz_id, user.id)
+    attempts = await async_list_assessment_attempts(limit=200, quiz_id=quiz_id, user_id=user.id)
     return {"quiz_id": quiz_id, "count": len(attempts), "attempts": attempts}
 
 
 @router.get("/assessment/attempts/{attempt_id}", summary="Retrieve one graded attempt")
-async def get_attempt(attempt_id: str = ATTEMPT_ID_DESCRIPTION) -> dict:
+async def get_attempt(
+    attempt_id: str = ATTEMPT_ID_DESCRIPTION,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Returns the full graded result including the per-question review."""
-    attempt = await async_get_assessment_attempt(attempt_id)
+    attempt = await async_get_assessment_attempt(attempt_id, user_id=user.id)
     if attempt is None:
         raise AssessmentError("We could not find that assessment attempt.")
 
@@ -124,16 +137,16 @@ async def get_attempt(attempt_id: str = ATTEMPT_ID_DESCRIPTION) -> dict:
 
 
 @router.get("/performance", summary="Aggregate performance statistics")
-async def performance() -> dict:
+async def performance(user: AuthenticatedUser = Depends(require_user)) -> dict:
     """Returns real aggregates from stored attempts.
 
     No value here is fabricated: with no attempt history every metric is zero and
     ``has_data`` is False so the UI can render an honest empty state.
     """
     try:
-        statistics = await async_get_platform_statistics()
-        topic_performance = await async_get_topic_performance()
-        recent = await async_get_recent_attempts(limit=8)
+        statistics = await async_get_platform_statistics(user_id=user.id)
+        topic_performance = await async_get_topic_performance(user_id=user.id)
+        recent = await async_get_recent_attempts(limit=8, user_id=user.id)
     except Exception as exc:  # noqa: BLE001
         logger.error("Performance aggregation failed: %s", exc)
         raise DatabaseError() from exc

@@ -5,7 +5,8 @@
  * this page reports them rather than pretending to change them.
  */
 
-import { getStatus } from '../api.js';
+import { getStatus, logout, logoutEverywhere } from '../api.js';
+import { displayName, getActiveUser, initials } from '../auth.js';
 import { escapeHtml, formatDateTime, hydrateIcons, titleCase } from '../dom.js';
 import { icon } from '../icons.js';
 import {
@@ -30,6 +31,14 @@ export default async function render() {
   const limits = status?.limits || {};
   const statistics = status?.statistics || {};
 
+  const user = getActiveUser();
+  const accountName = user ? displayName(user) : 'Your account';
+  const accountEmail = user?.email || '';
+  const accountAvatar = user?.picture_url
+    ? `<img src="${escapeHtml(user.picture_url)}" alt="" referrerpolicy="no-referrer" />`
+    : escapeHtml(user ? initials(user) : '?');
+  const accountProvider = user?.provider === 'google' ? 'Google' : 'Email';
+
   const content = `
     <div class="page__header">
       <h1 class="page__title">Settings</h1>
@@ -38,6 +47,29 @@ export default async function render() {
         can see exactly what the platform is running with.
       </p>
     </div>
+
+    <section class="card">
+      <div class="card__header">
+        <div>
+          <h2 class="card__title">Account</h2>
+          <p class="card__subtitle">Manage the session you are signed in with</p>
+        </div>
+      </div>
+      <div class="card__body">
+        <div class="account-summary">
+          <span class="avatar avatar--lg">${accountAvatar}</span>
+          <div class="account-summary__info">
+            <p class="account-summary__name">${escapeHtml(accountName)}</p>
+            ${accountEmail ? `<p class="account-summary__email">${escapeHtml(accountEmail)}</p>` : ''}
+            <span class="badge badge--neutral">${escapeHtml(accountProvider)} sign-in</span>
+          </div>
+        </div>
+        <div class="page__actions" style="margin-top:var(--space-4)">
+          <button type="button" class="btn btn--secondary" id="sign-out">Sign out</button>
+          <button type="button" class="btn btn--ghost" id="sign-out-all">Sign out everywhere</button>
+        </div>
+      </div>
+    </section>
 
     <section class="card">
       <div class="card__header">
@@ -193,6 +225,23 @@ export default async function render() {
         if (shell) shell.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
         setSidebarCollapsed(collapsed);
         toastSuccess(collapsed ? 'Sidebar collapsed.' : 'Sidebar expanded.');
+      });
+
+      const signOut = async (request, message) => {
+        try {
+          await request();
+        } catch {
+          /* Even if the request fails, clear the client and re-gate. */
+        }
+        toastSuccess(message);
+        window.setTimeout(() => window.location.reload(), 400);
+      };
+
+      root.querySelector('#sign-out')?.addEventListener('click', () => {
+        signOut(logout, 'You have been signed out.');
+      });
+      root.querySelector('#sign-out-all')?.addEventListener('click', () => {
+        signOut(logoutEverywhere, 'Signed out on every device.');
       });
     },
     cleanup() {

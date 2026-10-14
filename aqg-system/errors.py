@@ -131,6 +131,46 @@ class AssessmentError(AQGError):
     default_message = "We could not process this assessment submission."
 
 
+class AuthenticationError(AQGError):
+    """Raised when a request has no valid authenticated session."""
+
+    status_code = 401
+    error_code = "unauthenticated"
+    default_message = "Please sign in to continue."
+
+
+class AuthorizationError(AQGError):
+    """Raised when an authenticated user may not touch a resource."""
+
+    status_code = 403
+    error_code = "forbidden"
+    default_message = "You do not have access to that resource."
+
+
+class CSRFError(AQGError):
+    """Raised when a state-changing request fails CSRF validation."""
+
+    status_code = 403
+    error_code = "csrf_failed"
+    default_message = "Your session has expired. Please refresh the page and try again."
+
+
+class AuthProviderError(AQGError):
+    """Raised when a third-party identity provider cannot complete a sign-in."""
+
+    status_code = 502
+    error_code = "auth_provider_error"
+    default_message = "We could not complete sign-in with that provider. Please try again."
+
+
+class AuthConfigError(AQGError):
+    """Raised when an authentication method is requested but not configured."""
+
+    status_code = 503
+    error_code = "auth_not_configured"
+    default_message = "That sign-in method is not available on this deployment."
+
+
 class AttemptNotSubmittedError(AQGError):
     """Raised when the answer key is requested without a matching attempt.
 

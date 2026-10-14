@@ -5,13 +5,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from api.deps import logger
+from api.security import get_optional_user, require_user
 from config.settings import settings
 from errors import DatabaseError
 from models.question import DIFFICULTY_LABELS, QUESTION_TYPE_LABELS, QuestionType
 from models.study import STUDY_MATERIAL_LABELS
+from models.user import AuthenticatedUser
 from services.database import (
     async_get_platform_statistics,
     async_get_recent_activity,
@@ -31,13 +33,16 @@ async def health_check() -> dict:
 
 
 @router.get("/api/status", summary="API and service status")
-async def platform_status() -> dict:
+async def platform_status(
+    user: AuthenticatedUser | None = Depends(get_optional_user),
+) -> dict:
     """Reports configuration state for the sidebar status panel.
 
-    Only booleans and safe values are returned; secrets are never echoed.
+    Only booleans and safe values are returned; secrets are never echoed. When a
+    caller is signed in, the embedded statistics are scoped to their own data.
     """
     try:
-        statistics = await async_get_platform_statistics()
+        statistics = await async_get_platform_statistics(user_id=user.id if user else None)
         database_ok = True
     except Exception as exc:  # noqa: BLE001 - surfaced as a degraded flag, not a 500
         statistics = {}
@@ -87,16 +92,16 @@ async def platform_status() -> dict:
 
 
 @router.get("/api/dashboard", summary="Dashboard statistics, activity and quick actions")
-async def dashboard() -> dict:
+async def dashboard(user: AuthenticatedUser = Depends(require_user)) -> dict:
     """Aggregates everything the dashboard needs in one round trip."""
     try:
-        statistics = await async_get_platform_statistics()
+        statistics = await async_get_platform_statistics(user_id=user.id)
     except Exception as exc:  # noqa: BLE001
         logger.error("Dashboard statistics unavailable: %s", exc)
         raise DatabaseError() from exc
 
-    activity = await async_get_recent_activity(limit=8)
-    recent_attempts = await async_get_recent_attempts(limit=5)
+    activity = await async_get_recent_activity(limit=8, user_id=user.id)
+    recent_attempts = await async_get_recent_attempts(limit=5, user_id=user.id)
 
     return {
         "statistics": statistics,

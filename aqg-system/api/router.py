@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from api.routers.assessments import router as assessments_router
+from api.routers.auth import router as auth_router
 from api.routers.documents import router as documents_router
 from api.routers.generation import router as generation_router
 from api.routers.history import router as history_router
@@ -19,6 +20,7 @@ from api.routers.system import router as system_router
 #: Registration order determines the OpenAPI tag order.
 ALL_ROUTERS = (
     system_router,
+    auth_router,
     generation_router,
     study_router,
     quiz_router,

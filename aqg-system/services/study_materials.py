@@ -204,6 +204,7 @@ async def generate_study_material(
     topic: str = "",
     generator: QuestionGeneratorService | None = None,
     persist: bool = True,
+    user_id: str | None = None,
 ) -> StudyMaterial:
     """Generates, validates and persists one study resource bundle."""
     engine = generator or QuestionGeneratorService()
@@ -235,6 +236,7 @@ async def generate_study_material(
                 topic=material.topic,
                 source_filename=material.source_filename,
                 document_id=material.document_id,
+                user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 - persistence must not lose the payload
             logger.warning("Study material could not be persisted: %s", exc)

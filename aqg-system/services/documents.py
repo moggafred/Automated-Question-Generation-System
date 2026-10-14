@@ -74,6 +74,7 @@ async def ingest_document(
     *,
     persist: bool = True,
     file_bytes: bytes | None = None,
+    user_id: str | None = None,
 ) -> IndexedDocument:
     """Runs the full ingestion pipeline for one uploaded document.
 
@@ -117,6 +118,7 @@ async def ingest_document(
                 word_count=document.word_count,
                 chunk_count=document.chunk_count,
                 status=document.status,
+                user_id=user_id,
             )
         except Exception as exc:  # noqa: BLE001 - persistence must not break generation
             logger.warning("Document metadata could not be persisted: %s", exc)

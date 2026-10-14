@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from api.deps import logger
+from api.security import require_user
 from config.settings import settings
 from models.question import resolve_difficulty
+from models.user import AuthenticatedUser
 from services.documents import ingest_document
 from services.generation import (
     generate_assessment,
@@ -52,12 +54,13 @@ async def _run_generation(
     difficulty: str,
     topic: str,
     custom_instructions: str,
+    user_id: str,
 ) -> dict:
     """Shared implementation for both generation endpoints."""
     resolved_count = resolve_question_count(count)
     resolved_difficulty = resolve_difficulty(difficulty)
 
-    indexed = await ingest_document(file)
+    indexed = await ingest_document(file, user_id=user_id)
     assessment, _chunks = await generate_assessment(
         indexed=indexed,
         question_type=question_type,
@@ -74,6 +77,7 @@ async def _run_generation(
         topic=topic_label,
         question_type=question_type,
         document=indexed.document,
+        user_id=user_id,
     )
 
     return _response_payload(
@@ -93,6 +97,7 @@ async def generate_quiz(
     difficulty: str = Form("medium", description="easy, medium or hard."),
     topic: str = Form("", description="Optional topic focus for retrieval."),
     instructions: str = Form("", description="Optional custom instructions for the AI."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Ingests a document, retrieves relevant context and returns a fresh assessment."""
     logger.info(
@@ -109,6 +114,7 @@ async def generate_quiz(
         difficulty=difficulty,
         topic=topic,
         custom_instructions=instructions,
+        user_id=user.id,
     )
 
 
@@ -120,6 +126,7 @@ async def generate_quiz_legacy(
     topic: str = Form("", description="Optional topic focus for retrieval."),
     difficulty: str = Form("medium", description="easy, medium or hard."),
     instructions: str = Form("", description="Optional custom instructions for the AI."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Backwards-compatible endpoint retained from the original release.
 
@@ -133,6 +140,7 @@ async def generate_quiz_legacy(
         difficulty=difficulty,
         topic=topic,
         custom_instructions=instructions,
+        user_id=user.id,
     )
 
 

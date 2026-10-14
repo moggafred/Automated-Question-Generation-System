@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Path, Query
+from fastapi import APIRouter, Depends, Path, Query
 
+from api.security import require_user
 from errors import QuizNotFoundError
 from models.question import QUESTION_TYPE_LABELS
 from models.quiz import Assessment
+from models.user import AuthenticatedUser
 from services.database import (
     MAX_HISTORY_PAGE_SIZE,
     async_count_assessment_attempts,
@@ -28,10 +30,13 @@ async def list_historical_quizzes(
     offset: int = Query(0, ge=0, description="Pagination offset for history browsing."),
     topic: str = Query("", description="Optional exact topic filter."),
     type: str = Query("", description="Optional question type filter."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Lists historically generated assessments, newest first."""
-    records = await async_list_quizzes(limit=limit, offset=offset, topic=topic, quiz_type=type)
-    total = await async_count_quizzes(topic=topic, quiz_type=type)
+    records = await async_list_quizzes(
+        limit=limit, offset=offset, topic=topic, quiz_type=type, user_id=user.id
+    )
+    total = await async_count_quizzes(topic=topic, quiz_type=type, user_id=user.id)
 
     return {
         "total": total,
@@ -46,11 +51,14 @@ async def list_historical_quizzes(
 
 
 @router.get("/v1/quizzes/{quiz_id}/source", summary="Retrieve original upload metadata")
-async def get_historical_quiz_source(quiz_id: str = QUIZ_ID_DESCRIPTION) -> dict:
+async def get_historical_quiz_source(
+    quiz_id: str = QUIZ_ID_DESCRIPTION,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Returns the original upload metadata for a historical assessment."""
     from services.database import async_get_quiz_by_id
 
-    record = await async_get_quiz_by_id(quiz_id)
+    record = await async_get_quiz_by_id(quiz_id, user_id=user.id)
     if record is None:
         raise QuizNotFoundError()
 
@@ -65,9 +73,12 @@ async def get_historical_quiz_source(quiz_id: str = QUIZ_ID_DESCRIPTION) -> dict
 
 
 @router.delete("/v1/quizzes/{quiz_id}", summary="Delete an assessment from history")
-async def remove_historical_quiz(quiz_id: str = QUIZ_ID_DESCRIPTION) -> dict:
+async def remove_historical_quiz(
+    quiz_id: str = QUIZ_ID_DESCRIPTION,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Deletes a historical assessment record and its dependent attempts."""
-    deleted = await async_delete_quiz(quiz_id)
+    deleted = await async_delete_quiz(quiz_id, user_id=user.id)
     if not deleted:
         raise QuizNotFoundError()
     return {"quiz_id": quiz_id, "deleted": True}
@@ -80,6 +91,7 @@ async def quiz_history(
     topic: str = Query("", description="Optional exact topic filter."),
     type: str = Query("", description="Optional question type filter."),
     search: str = Query("", max_length=200, description="Free-text search over topic, title and filename."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Returns history rows enriched with attempt counts for the history page.
 
@@ -95,14 +107,15 @@ async def quiz_history(
         offset=0,
         topic=normalized_topic,
         quiz_type=normalized_type,
+        user_id=user.id,
     )
-    total = await async_count_quizzes(topic=normalized_topic, quiz_type=normalized_type)
-    topics = await async_distinct_topics()
+    total = await async_count_quizzes(topic=normalized_topic, quiz_type=normalized_type, user_id=user.id)
+    topics = await async_distinct_topics(user_id=user.id)
 
     enriched: list[dict] = []
     for record in records:
-        attempts = await async_count_assessment_attempts(quiz_id=record["quiz_id"])
-        recent = await async_list_assessment_attempts(limit=1, quiz_id=record["quiz_id"])
+        attempts = await async_count_assessment_attempts(quiz_id=record["quiz_id"], user_id=user.id)
+        recent = await async_list_assessment_attempts(limit=1, quiz_id=record["quiz_id"], user_id=user.id)
         if term:
             haystack = " ".join(
                 str(record.get(key) or "") for key in ("topic", "quiz_title", "source_filename", "quiz_type")

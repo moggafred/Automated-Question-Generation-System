@@ -211,6 +211,7 @@ async def persist_assessment(
     topic: str,
     question_type: str,
     document: object | None = None,
+    user_id: str | None = None,
 ) -> str:
     """Stores the assessment and returns its UUID4 tracking ID."""
     from services.database import async_save_quiz
@@ -225,6 +226,7 @@ async def persist_assessment(
         source_filename=getattr(document, "filename", None),
         difficulty=str(assessment.difficulty),
         document_id=getattr(document, "id", None),
+        user_id=user_id,
     )
     return quiz_id
 

@@ -47,6 +47,43 @@ The answer key is never sent to the browser before submission:
   be read off the network tab.
 - Scoring happens server-side; the review screen shows the breakdown after grading.
 
+## Authentication
+
+Sign-in is real and enforced by the backend — the frontend never decides access
+on its own. Two methods are supported:
+
+- **Email + password** — hashed with stdlib `hashlib.scrypt` (parameters are
+  stored alongside each digest, so the work factor can be raised later). Minimum
+  length is `PASSWORD_MIN_LENGTH` (default 8). Disable with
+  `EMAIL_PASSWORD_ENABLED=False`.
+- **Google OAuth 2.0 / OpenID Connect** — Authorization Code flow with **PKCE**,
+  implemented directly against Google's discovery document using `httpx` (no
+  `authlib` dependency). Users are matched to existing accounts by verified
+  email, then linked. Enable by setting `GOOGLE_CLIENT_ID` and
+  `GOOGLE_CLIENT_SECRET`; leave blank to hide the Google button.
+
+### Sessions and cookies
+
+- On sign-in the server mints an opaque token (`secrets.token_urlsafe`); only its
+  SHA-256 digest is stored in the `sessions` table, so a database leak cannot be
+  replayed. Sessions expire after `SESSION_TTL_SECONDS` (default 7 days).
+- The token lives in an **HttpOnly** cookie (`aqg_session`). A second readable
+  cookie (`aqg_csrf`) carries a double-submit CSRF token that the client echoes
+  back in the `X-CSRF-Token` header on every `POST`/`PUT`/`PATCH`/`DELETE`.
+  Mismatches return `403 csrf_failed`.
+- Set `SESSION_COOKIE_SECURE=True` on any HTTPS deployment, and a strong
+  `AUTH_SECRET_KEY` (when blank a per-process value is derived, which is only
+  safe for local development).
+
+### Per-user ownership
+
+Every assessment, document, study material and attempt is stamped with the
+owning `user_id`. Reads, writes and deletes are filtered by the signed-in user,
+and rows created before accounts existed (a `NULL` owner) remain visible so
+existing data is never orphaned. Tests run against an override
+(`tests/conftest.py`) so the original feature suite keeps passing; tests marked
+`real_auth` drive the genuine cookie/session/CSRF flow.
+
 ## Requirements
 
 - Python 3.11+
@@ -80,12 +117,25 @@ a real provider key.
 Errors always use the envelope `{"error": "...", "detail": "..."}` with a
 user-safe message; internals stay in the server log.
 
+Every endpoint requires an authenticated session **except** `/health`,
+`/api/status`, `/api/limits` and `/api/auth/providers`. State-changing requests
+additionally require the CSRF header described below.
+
 | Method | Path                              | Notes                                                     |
 |--------|-----------------------------------|-----------------------------------------------------------|
 | `GET`  | `/health`                         | Liveness probe, never touches the database                |
 | `GET`  | `/api/status`                     | App identity, service states, aggregate counts            |
 | `GET`  | `/api/dashboard`                  | Statistics, recent activity/attempts, quick actions        |
 | `GET`  | `/api/limits`                     | Upload and generation bounds for the client                |
+| `GET`  | `/api/auth/providers`             | Public: which sign-in methods are enabled                  |
+| `GET`  | `/api/auth/me`                    | Current user (`401` when signed out)                       |
+| `POST` | `/api/auth/register`              | Create an email + password account                         |
+| `POST` | `/api/auth/login`                 | Sign in with email + password                              |
+| `POST` | `/api/auth/logout`                | End the current session                                    |
+| `POST` | `/api/auth/logout-all`            | End every other session for the account                    |
+| `PATCH`| `/api/auth/profile`               | Update display name / picture                              |
+| `GET`  | `/api/auth/google/start`          | Begin Google OAuth; returns the authorization URL          |
+| `GET`  | `/api/auth/google/callback`       | OAuth redirect target; sets cookies, returns to the SPA    |
 | `POST` | `/api/generate-quiz`              | Generate an assessment from an upload                     |
 | `POST` | `/api/v1/generate`                | Legacy alias of the above                                 |
 | `GET`  | `/api/quiz/{quiz_id}`             | Learner-safe assessment payload                           |
@@ -138,17 +188,21 @@ Responses: `200` payload, `400` invalid input, `413` oversize upload,
   both anchored to the project root.
 
 Tables: `generated_quizzes`, `documents`, `study_materials`, `assessment_attempts`,
-`recent_activity`, plus supporting indexes. The original `generated_quizzes` schema
-(`id`, `topic`, `quiz_type`, `num_questions`, `quiz_data`, `source_filename`,
-`created_at`, `difficulty`, `document_id`) is preserved.
+`recent_activity`, plus the authentication tables `users`, `sessions` and
+`oauth_states`, and supporting indexes. Ownership is tracked through a `user_id`
+column added to the content tables by a non-destructive migration; rows with a
+`NULL` owner predate accounts and stay visible to everyone. The original
+`generated_quizzes` schema (`id`, `topic`, `quiz_type`, `num_questions`,
+`quiz_data`, `source_filename`, `created_at`, `difficulty`, `document_id`) is
+preserved.
 
 ## Project layout
 
 ```
-api/            routers, dependency wiring, exception handlers
+api/            routers (incl. auth), dependency wiring, auth security helpers
 config/         environment-driven settings
-models/         Pydantic schemas (question, quiz, assessment, study, document)
-services/       parsing, retrieval, generation, grading, persistence
+models/         Pydantic schemas (question, quiz, assessment, study, document, user)
+services/       parsing, retrieval, generation, grading, persistence, auth
 static/         the SPA: index.html, css/, js/ (core modules + pages)
 tests/          pytest suite
 main.py         app assembly, middleware, static hosting
@@ -162,6 +216,58 @@ python -m pytest tests -v
 
 `tests/conftest.py` redirects the database to a throwaway file for the session, so
 the suite never writes to your working `quizzes.db`.
+
+## Deployment
+
+The split deployment keeps the SPA and the API on separate hosts while the
+browser still sees a single origin, so HttpOnly session cookies work without
+cross-site plumbing.
+
+### 1. Backend (Render)
+
+`render.yaml` at the repository root is a Render Blueprint that builds the
+FastAPI service from `aqg-system/`.
+
+1. Push to GitHub, then in Render choose **New + → Blueprint** and select the
+   repository. Render reads `render.yaml`, creates the service and prompts for
+   the secrets marked `sync: false`.
+2. Provide the secrets Render prompts for:
+   - `AUTH_SECRET_KEY` — pre-generated by Render (`generateValue: true`).
+   - `FRONTEND_URL` — the Vercel URL you create below (e.g. `https://aqg.vercel.app`).
+   - `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+   - `GOOGLE_REDIRECT_URI`, e.g.
+     `https://<your-service>.onrender.com/api/auth/google/callback`
+   - `OPENAI_API_KEY` (and `LLM_BASE_URL` if using a gateway)
+   - `SESSION_COOKIE_SECURE=true`
+3. The `/api/status` endpoint is the health check.
+
+### Frontend on Vercel
+
+1. Import the same repository into Vercel. `vercel.json` at the repo root sets
+   `outputDirectory` to `aqg-system/static` and proxies `/api/*` to the backend.
+2. Edit the `rewrites.destination` in `vercel.json` to your Render URL, e.g.
+   `https://aqg-api.onrender.com/api/:path*`, then redeploy. Because the API is
+   proxied same-origin, the session cookie is sent automatically and no CORS
+   configuration is needed.
+3. Set `FRONTEND_URL` on Render to the Vercel domain and redeploy the backend.
+
+### Google Cloud Console
+
+Create an OAuth 2.0 **Web application** client and add both redirect URIs:
+
+```
+https://<render-service>.onrender.com/api/auth/google/callback
+http://localhost:8000/api/auth/google/callback
+```
+
+### Notes
+
+- The free Render tier has an ephemeral filesystem, so SQLite is reset on each
+  deploy. Attach a persistent disk and set `DATABASE_PATH` onto it, or migrate to
+  a managed Postgres (a future change; the persistence layer is isolated in
+  `services/database.py`).
+- Never commit `.env`; `.gitignore` excludes it and `quizzes.db`. Set secrets
+  through the host's environment settings.
 
 ## Docker
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 
+from api.security import require_user
 from config.settings import settings
 from errors import StudyMaterialNotFoundError, ValidationError
 from models.study import STUDY_MATERIAL_LABELS, StudyMaterial, StudyMaterialType
+from models.user import AuthenticatedUser
 from services.database import (
     async_count_study_materials,
     async_delete_study_material,
@@ -48,6 +50,7 @@ async def generate_study_material_endpoint(
     file: UploadFile = File(..., description="A PDF or TXT learning material."),
     type: str = Form("all", description="summary, key-concepts, flashcards, definitions, revision-notes or all."),
     topic: str = Form("", description="Optional topic focus for retrieval."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Generates and persists a study resource bundle grounded in the document."""
     material_type = StudyMaterialType.resolve(type)
@@ -56,13 +59,14 @@ async def generate_study_material_endpoint(
         raise ValidationError(f"That study material type is not supported. Choose one of: {supported}.")
 
     resolved_topic = resolve_topic(topic)
-    indexed = await ingest_document(file)
+    indexed = await ingest_document(file, user_id=user.id)
 
     material = await generate_study_material(
         indexed=indexed,
         material_type=material_type,
         topic=resolved_topic,
         generator=generator_service,
+        user_id=user.id,
     )
 
     return {
@@ -77,6 +81,7 @@ async def list_study_materials_endpoint(
     limit: int = Query(20, ge=1, le=200, description="Maximum number of records to return."),
     offset: int = Query(0, ge=0, description="Pagination offset."),
     type: str = Query("", description="Optional material type filter."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Returns stored study materials, newest first."""
     normalized = (type or "").strip()
@@ -84,8 +89,10 @@ async def list_study_materials_endpoint(
         resolved = StudyMaterialType.resolve(normalized)
         normalized = resolved.value if resolved else normalized
 
-    records = await async_list_study_materials(limit=limit, offset=offset, material_type=normalized)
-    total = await async_count_study_materials()
+    records = await async_list_study_materials(
+        limit=limit, offset=offset, material_type=normalized, user_id=user.id
+    )
+    total = await async_count_study_materials(user_id=user.id)
 
     return {
         "total": total,
@@ -109,9 +116,12 @@ async def list_study_materials_endpoint(
 
 
 @router.get("/study-materials/{material_id}", summary="Retrieve one study material")
-async def get_study_material_endpoint(material_id: str) -> dict:
+async def get_study_material_endpoint(
+    material_id: str,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Returns the full generated content for a stored study material."""
-    stored = await async_get_study_material(material_id)
+    stored = await async_get_study_material(material_id, user_id=user.id)
     if stored is None:
         raise StudyMaterialNotFoundError()
 
@@ -123,9 +133,12 @@ async def get_study_material_endpoint(material_id: str) -> dict:
 
 
 @router.delete("/study-materials/{material_id}", summary="Delete a study material")
-async def delete_study_material_endpoint(material_id: str) -> dict:
+async def delete_study_material_endpoint(
+    material_id: str,
+    user: AuthenticatedUser = Depends(require_user),
+) -> dict:
     """Removes a stored study material."""
-    deleted = await async_delete_study_material(material_id)
+    deleted = await async_delete_study_material(material_id, user_id=user.id)
     if not deleted:
         raise StudyMaterialNotFoundError()
     return {"material_id": material_id, "deleted": True}

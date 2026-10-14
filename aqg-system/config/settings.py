@@ -91,6 +91,43 @@ class Settings(BaseSettings):
     RATE_LIMIT_REQUESTS: int = _env_int("RATE_LIMIT_REQUESTS", 240)
     RATE_LIMIT_WINDOW_SECONDS: int = _env_int("RATE_LIMIT_WINDOW_SECONDS", 60)
 
+    # --- Authentication / sessions --------------------------------------
+    # Signing material for opaque session identifiers. A random value is derived
+    # per process when unset (fine for local development, never for production).
+    AUTH_SECRET_KEY: str = os.getenv("AUTH_SECRET_KEY", "")
+    SESSION_COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "aqg_session")
+    CSRF_COOKIE_NAME: str = os.getenv("CSRF_COOKIE_NAME", "aqg_csrf")
+    # Seven days by default.
+    SESSION_TTL_SECONDS: int = _env_int("SESSION_TTL_SECONDS", 60 * 60 * 24 * 7)
+    SESSION_COOKIE_SECURE: bool = _env_bool("SESSION_COOKIE_SECURE", False)
+    SESSION_COOKIE_SAMESITE: str = os.getenv("SESSION_COOKIE_SAMESITE", "lax")
+    # Ten minutes for an in-flight OAuth handshake.
+    OAUTH_STATE_TTL_SECONDS: int = _env_int("OAUTH_STATE_TTL_SECONDS", 600)
+
+    # --- Email + password accounts --------------------------------------
+    EMAIL_PASSWORD_ENABLED: bool = _env_bool("EMAIL_PASSWORD_ENABLED", True)
+    PASSWORD_MIN_LENGTH: int = _env_int("PASSWORD_MIN_LENGTH", 8)
+    PASSWORD_MAX_LENGTH: int = _env_int("PASSWORD_MAX_LENGTH", 128)
+
+    # --- Google OAuth 2.0 / OpenID Connect ------------------------------
+    GOOGLE_CLIENT_ID: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    GOOGLE_CLIENT_SECRET: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    # When blank the redirect URI is derived from the incoming request URL.
+    GOOGLE_REDIRECT_URI: str = os.getenv("GOOGLE_REDIRECT_URI", "")
+    GOOGLE_DISCOVERY_URL: str = os.getenv(
+        "GOOGLE_DISCOVERY_URL",
+        "https://accounts.google.com/.well-known/openid-configuration",
+    )
+
+    # --- Deployment / cross-origin --------------------------------------
+    # Where users are sent after a successful OAuth round trip. Blank means the
+    # request origin (single-origin deployment).
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "")
+    # Comma-separated list of browser origins allowed to call the API directly.
+    ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "")
+    # Set when the app runs behind a TLS-terminating proxy (Vercel/Render).
+    TRUST_PROXY_HEADERS: bool = _env_bool("TRUST_PROXY_HEADERS", True)
+
     @property
     def allowed_extensions(self) -> tuple[str, ...]:
         """Lower-cased, dot-prefixed extension whitelist used by upload validation."""
@@ -111,6 +148,29 @@ class Settings(BaseSettings):
         if self.LLM_PROVIDER == "local":
             return bool(self.LOCAL_LLM_BASE_URL)
         return bool(self.OPENAI_API_KEY) and self.OPENAI_API_KEY not in ("mock_key", "your_openai_api_key_here")
+
+    @property
+    def google_oauth_enabled(self) -> bool:
+        """True when Google OAuth credentials are configured (never echoes them)."""
+        return bool(self.GOOGLE_CLIENT_ID) and bool(self.GOOGLE_CLIENT_SECRET)
+
+    @property
+    def auth_configured(self) -> bool:
+        """True when at least one sign-in method is available."""
+        return self.google_oauth_enabled or self.EMAIL_PASSWORD_ENABLED
+
+    @property
+    def cors_origins(self) -> tuple[str, ...]:
+        """Normalised list of browser origins permitted to call the API directly."""
+        origins = [part.strip().rstrip("/") for part in self.ALLOWED_ORIGINS.split(",") if part.strip()]
+        if not origins and self.FRONTEND_URL.strip():
+            origins.append(self.FRONTEND_URL.strip().rstrip("/"))
+        return tuple(dict.fromkeys(origins))
+
+    @property
+    def auth_secret_is_default(self) -> bool:
+        """True when no explicit signing key was supplied."""
+        return not self.AUTH_SECRET_KEY.strip()
 
 
 settings = Settings()

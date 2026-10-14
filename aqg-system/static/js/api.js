@@ -8,6 +8,23 @@
 
 const BASE = '/api';
 
+/** Name of the readable, CSRF double-submit cookie set by the backend. */
+const CSRF_COOKIE = 'aqg_csrf';
+
+/** Methods that mutate state and therefore must carry the CSRF token. */
+const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Reads a cookie value by name; returns '' when absent. */
+function readCookie(name) {
+  const match = document.cookie.match(new RegExp(`(?:^|;\\s*)${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+/** Broadcasts that the session is no longer valid so the shell can re-gate. */
+function signalUnauthenticated() {
+  window.dispatchEvent(new CustomEvent('aqg:unauthorized'));
+}
+
 /** Error thrown for any non-2xx response, carrying a user-safe message. */
 export class ApiError extends Error {
   constructor(message, { status = 0, code = 'request_failed', payload = null } = {}) {
@@ -48,13 +65,21 @@ export class NetworkError extends Error {
 }
 
 async function request(path, { method = 'GET', body, form, signal } = {}) {
-  const init = { method, signal, headers: { Accept: 'application/json' } };
+  // Credentials must travel with every call so the session cookie is sent,
+  // including when the SPA is served from a different origin than the API.
+  const init = { method, signal, credentials: 'include', headers: { Accept: 'application/json' } };
 
   if (form) {
     init.body = form; // Let the browser set the multipart boundary.
   } else if (body !== undefined) {
     init.headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
+  }
+
+  // Double-submit CSRF token for state-changing requests.
+  if (MUTATING.has(method)) {
+    const token = readCookie(CSRF_COOKIE);
+    if (token) init.headers['X-CSRF-Token'] = token;
   }
 
   let response;
@@ -69,6 +94,11 @@ async function request(path, { method = 'GET', body, form, signal } = {}) {
   const payload = isJson ? await response.json().catch(() => null) : null;
 
   if (!response.ok) {
+    // A 401 outside the auth endpoints means the session expired: let the shell
+    // tear down protected UI. Auth calls handle their own 401s inline.
+    if (response.status === 401 && !path.startsWith(`${BASE}/auth/`)) {
+      signalUnauthenticated();
+    }
     throw new ApiError(errorMessage(payload, response.status), {
       status: response.status,
       code: payload?.error || 'request_failed',
@@ -116,6 +146,40 @@ function query(params = {}) {
   }
   const serialized = search.toString();
   return serialized ? `?${serialized}` : '';
+}
+
+// -- Authentication ------------------------------------------------------
+
+export function getAuthProviders(options) {
+  return request(`${BASE}/auth/providers`, options);
+}
+
+export function getCurrentUser(options) {
+  return request(`${BASE}/auth/me`, options);
+}
+
+export function registerAccount(payload, options) {
+  return request(`${BASE}/auth/register`, { method: 'POST', body: payload, ...options });
+}
+
+export function loginWithPassword(payload, options) {
+  return request(`${BASE}/auth/login`, { method: 'POST', body: payload, ...options });
+}
+
+export function logout(options) {
+  return request(`${BASE}/auth/logout`, { method: 'POST', ...options });
+}
+
+export function logoutEverywhere(options) {
+  return request(`${BASE}/auth/logout-all`, { method: 'POST', ...options });
+}
+
+export function updateProfile(payload, options) {
+  return request(`${BASE}/auth/profile`, { method: 'PATCH', body: payload, ...options });
+}
+
+export function startGoogleSignIn(options) {
+  return request(`${BASE}/auth/google/start`, options);
 }
 
 // -- System --------------------------------------------------------------

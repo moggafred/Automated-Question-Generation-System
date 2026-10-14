@@ -17,6 +17,13 @@ import {
   toggleTheme,
 } from './store.js';
 import { toastError } from './toast.js';
+import {
+  applyUserToChrome,
+  loadAuth,
+  mountUserMenu,
+  oauthErrorMessage,
+  renderGate,
+} from './auth.js';
 
 const NAV_SELECTOR = '[data-nav]';
 
@@ -197,12 +204,26 @@ function wireShellEvents() {
   });
 }
 
-function boot() {
-  hydrateShell();
-  applySidebarState();
-  syncThemeButton();
-  wireShellEvents();
-  wireGlobalSearch();
+/** Hides the workspace and renders the sign-in gate. */
+function showGate(message = '') {
+  const shell = $('#app-shell');
+  const gate = $('#auth-gate');
+  if (shell) shell.dataset.auth = 'signed-out';
+  if (gate) {
+    gate.hidden = false;
+    renderGate(gate, { message });
+  }
+  document.body.dataset.booted = 'true';
+}
+
+/** Reveals the workspace and starts routing for a signed-in user. */
+function startApp(user) {
+  const shell = $('#app-shell');
+  const gate = $('#auth-gate');
+  if (shell) shell.dataset.auth = 'signed-in';
+  if (gate) gate.hidden = true;
+
+  applyUserToChrome(user);
 
   startRouter($('#page-root'), (view) => {
     syncTopbar(view);
@@ -214,6 +235,50 @@ function boot() {
 
   // Keep the service indicator honest without hammering the API.
   setInterval(refreshStatus, 120000);
+}
+
+/** Strips `?auth_error=...` so a reload does not replay the message. */
+function clearOauthErrorParam() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('auth_error')) return;
+  url.searchParams.delete('auth_error');
+  const search = url.searchParams.toString();
+  history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`);
+}
+
+async function boot() {
+  hydrateShell();
+  applySidebarState();
+  syncThemeButton();
+  wireShellEvents();
+  wireGlobalSearch();
+  mountUserMenu();
+
+  // A session that lapses mid-use returns the user to the gate.
+  window.addEventListener('aqg:unauthorized', () => {
+    showGate('Your session has expired. Please sign in again.');
+  });
+
+  const params = new URLSearchParams(window.location.search);
+  const oauthError = params.get('auth_error');
+
+  let state;
+  try {
+    state = await loadAuth();
+  } catch (error) {
+    // The server could not be reached; the gate doubles as a status screen.
+    showGate('We could not reach the server. Check your connection and try again.');
+    if (!document.body.dataset.booted) toastError(error.message);
+    return;
+  }
+
+  clearOauthErrorParam();
+
+  if (state.user) {
+    startApp(state.user);
+  } else {
+    showGate(oauthErrorMessage(oauthError));
+  }
 }
 
 if (document.readyState === 'loading') {

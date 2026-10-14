@@ -319,6 +319,7 @@ async def grade_and_persist(
     *,
     quiz_id: str,
     quiz_topic: str = "",
+    user_id: str | None = None,
 ) -> AssessmentResult:
     """Grades a submission and stores the attempt so it appears in history."""
     from services.database import async_save_assessment_attempt
@@ -346,6 +347,7 @@ async def grade_and_persist(
         review=[review.model_dump(mode="json") for review in result.review],
         topic=result.topic,
         time_spent_seconds=result.time_spent_seconds,
+        user_id=user_id,
     )
 
     logger.info("Graded attempt %s for quiz %s (%.1f%%)", result.attempt_id, quiz_id, result.percentage)

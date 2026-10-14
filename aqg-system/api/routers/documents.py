@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Depends, Query
 
+from api.security import require_user
 from config.settings import settings
+from models.user import AuthenticatedUser
 from services.database import async_count_documents, async_list_documents
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -14,10 +16,11 @@ router = APIRouter(prefix="/api", tags=["documents"])
 async def list_documents(
     limit: int = Query(20, ge=1, le=200, description="Maximum number of documents to return."),
     offset: int = Query(0, ge=0, description="Pagination offset."),
+    user: AuthenticatedUser = Depends(require_user),
 ) -> dict:
     """Returns ingested documents with the metrics recorded at upload time."""
-    rows = await async_list_documents(limit=limit, offset=offset)
-    total = await async_count_documents()
+    rows = await async_list_documents(limit=limit, offset=offset, user_id=user.id)
+    total = await async_count_documents(user_id=user.id)
 
     return {
         "total": total,

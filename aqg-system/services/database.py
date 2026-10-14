@@ -45,8 +45,56 @@ QUIZ_TABLE = "generated_quizzes"
 DOCUMENT_TABLE = "documents"
 STUDY_TABLE = "study_materials"
 ATTEMPT_TABLE = "assessment_attempts"
+USER_TABLE = "users"
+SESSION_TABLE = "sessions"
+OAUTH_STATE_TABLE = "oauth_states"
 
+#: Sessions are opaque: only a SHA-256 digest of the bearer token is stored, so
+#: a database leak cannot be replayed against the running service.
 _SCHEMA_STATEMENTS = (
+    # --- Authenticated users -------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {USER_TABLE} (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL COLLATE NOCASE,
+        full_name TEXT NOT NULL DEFAULT '',
+        picture_url TEXT NOT NULL DEFAULT '',
+        provider TEXT NOT NULL DEFAULT 'password',
+        provider_subject TEXT,
+        password_hash TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_login_at TEXT
+    )
+    """,
+    f"CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON {USER_TABLE} (email COLLATE NOCASE)",
+    f"CREATE INDEX IF NOT EXISTS idx_users_provider_subject ON {USER_TABLE} (provider, provider_subject)",
+    # --- Server-side sessions ------------------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {SESSION_TABLE} (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        csrf_token TEXT NOT NULL,
+        user_agent TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES {USER_TABLE} (id) ON DELETE CASCADE
+    )
+    """,
+    f"CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON {SESSION_TABLE} (user_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON {SESSION_TABLE} (expires_at)",
+    # --- Short-lived OAuth handshake state ------------------------------
+    f"""
+    CREATE TABLE IF NOT EXISTS {OAUTH_STATE_TABLE} (
+        state TEXT PRIMARY KEY,
+        code_verifier TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+    """,
+    # --- Legacy generated quiz table (preserved verbatim) ---------------
     # --- Legacy generated quiz table (preserved verbatim) ---------------
     f"""
     CREATE TABLE IF NOT EXISTS {QUIZ_TABLE} (
@@ -126,6 +174,20 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (QUIZ_TABLE, "source_filename", "TEXT"),
     (QUIZ_TABLE, "difficulty", "TEXT NOT NULL DEFAULT 'medium'"),
     (QUIZ_TABLE, "document_id", "TEXT"),
+    # Ownership column: added in the authentication release. Pre-existing rows
+    # keep a NULL owner and remain readable by any signed-in user (legacy data).
+    (QUIZ_TABLE, "user_id", "TEXT"),
+    (DOCUMENT_TABLE, "user_id", "TEXT"),
+    (STUDY_TABLE, "user_id", "TEXT"),
+    (ATTEMPT_TABLE, "user_id", "TEXT"),
+)
+
+# Indexes that depend on migrated columns are created after the ALTERs run.
+_POST_MIGRATION_INDEXES = (
+    f"CREATE INDEX IF NOT EXISTS idx_generated_quizzes_user_id ON {QUIZ_TABLE} (user_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_documents_user_id ON {DOCUMENT_TABLE} (user_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_study_materials_user_id ON {STUDY_TABLE} (user_id)",
+    f"CREATE INDEX IF NOT EXISTS idx_assessment_attempts_user_id ON {ATTEMPT_TABLE} (user_id)",
 )
 
 _schema_lock = threading.Lock()
@@ -211,6 +273,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         if column not in _table_columns(conn, table):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+    for statement in _POST_MIGRATION_INDEXES:
+        conn.execute(statement)
+
 
 def _ensure_schema() -> None:
     """Creates the schema on first use so writes never depend on startup ordering."""
@@ -247,6 +312,7 @@ def save_quiz(
     source_filename: Optional[str] = None,
     difficulty: Optional[str] = None,
     document_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """Saves a generated quiz payload safely into the database layer."""
     if not quiz_id or not str(quiz_id).strip():
@@ -264,14 +330,15 @@ def save_quiz(
         _utc_now_iso(),
         (difficulty or "medium").strip().lower(),
         document_id or None,
+        user_id or None,
     )
 
     with get_connection() as conn, conn:
         conn.execute(
             """
             INSERT INTO generated_quizzes
-                (id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             record,
         )
@@ -280,6 +347,7 @@ def save_quiz(
 
 
 def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
     return {
         "quiz_id": row["id"],
         "topic": row["topic"],
@@ -288,9 +356,23 @@ def _row_to_record(row: sqlite3.Row) -> dict[str, Any]:
         "quiz_data": deserialize_quiz_data(row["quiz_data"]),
         "source_filename": row["source_filename"],
         "created_at": row["created_at"],
-        "difficulty": row["difficulty"] if "difficulty" in row.keys() else "medium",
-        "document_id": row["document_id"] if "document_id" in row.keys() else None,
+        "difficulty": row["difficulty"] if "difficulty" in keys else "medium",
+        "document_id": row["document_id"] if "document_id" in keys else None,
+        "user_id": row["user_id"] if "user_id" in keys else None,
     }
+
+
+def _owner_clause(user_id: Optional[str], params: list[Any], column: str = "user_id") -> Optional[str]:
+    """Builds an ownership predicate for private records.
+
+    Rows created before authentication existed carry a NULL owner and stay
+    readable by every signed-in user; rows created once someone is signed in are
+    private to that user.
+    """
+    if not user_id:
+        return None
+    params.append(user_id)
+    return f"({column} = ? OR {column} IS NULL)"
 
 
 def _summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -306,27 +388,35 @@ def _summary_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "question_count": len(questions) if isinstance(questions, list) else 0,
         "difficulty": row["difficulty"] if "difficulty" in keys else "medium",
         "document_id": row["document_id"] if "document_id" in keys else None,
+        "user_id": row["user_id"] if "user_id" in keys else None,
         "source_filename": row["source_filename"],
         "created_at": row["created_at"],
     }
 
 
-def get_quiz_by_id(quiz_id: str) -> Optional[dict[str, Any]]:
-    """Retrieves a historically generated quiz by its unique tracking ID."""
+def get_quiz_by_id(quiz_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    """Retrieves a historically generated quiz by its unique tracking ID.
+
+    When ``user_id`` is supplied the row is only returned if it belongs to that
+    user (or predates authentication and is therefore unowned).
+    """
     if not quiz_id:
         return None
 
     _ensure_schema()
 
+    params: list[Any] = [str(quiz_id).strip()]
+    query = """
+        SELECT id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id, user_id
+        FROM generated_quizzes
+        WHERE id = ?
+    """
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id
-            FROM generated_quizzes
-            WHERE id = ?
-            """,
-            (str(quiz_id).strip(),),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
 
     if row is None:
         return None
@@ -339,6 +429,7 @@ def list_quizzes(
     offset: int = 0,
     topic: Optional[str] = None,
     quiz_type: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Returns historical quiz summaries, newest first, for history browsing nodes."""
     _ensure_schema()
@@ -347,7 +438,7 @@ def list_quizzes(
     safe_offset = max(0, int(offset))
 
     query = """
-        SELECT id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id
+        SELECT id, topic, quiz_type, num_questions, quiz_data, source_filename, created_at, difficulty, document_id, user_id
         FROM generated_quizzes
     """
     params: list[Any] = []
@@ -358,6 +449,9 @@ def list_quizzes(
     if (quiz_type or "").strip():
         filters.append("quiz_type = ?")
         params.append(quiz_type.strip())
+    owner = _owner_clause(user_id, params)
+    if owner:
+        filters.append(owner)
     if filters:
         query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
@@ -369,7 +463,11 @@ def list_quizzes(
     return [_summary_from_row(row) for row in rows]
 
 
-def count_quizzes(topic: Optional[str] = None, quiz_type: Optional[str] = None) -> int:
+def count_quizzes(
+    topic: Optional[str] = None,
+    quiz_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> int:
     """Returns the number of persisted quizzes, optionally narrowed by topic/type."""
     _ensure_schema()
 
@@ -382,6 +480,9 @@ def count_quizzes(topic: Optional[str] = None, quiz_type: Optional[str] = None) 
     if (quiz_type or "").strip():
         filters.append("quiz_type = ?")
         params.append(quiz_type.strip())
+    owner = _owner_clause(user_id, params)
+    if owner:
+        filters.append(owner)
     if filters:
         query += " WHERE " + " AND ".join(filters)
 
@@ -391,25 +492,36 @@ def count_quizzes(topic: Optional[str] = None, quiz_type: Optional[str] = None) 
     return int(row["total"]) if row else 0
 
 
-def delete_quiz(quiz_id: str) -> bool:
+def delete_quiz(quiz_id: str, user_id: Optional[str] = None) -> bool:
     """Removes a historical quiz record. Returns True when a row was deleted."""
     if not quiz_id:
         return False
 
     _ensure_schema()
 
+    params: list[Any] = [str(quiz_id).strip()]
+    query = "DELETE FROM generated_quizzes WHERE id = ?"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn, conn:
-        cursor = conn.execute("DELETE FROM generated_quizzes WHERE id = ?", (str(quiz_id).strip(),))
+        cursor = conn.execute(query, params)
         return cursor.rowcount > 0
 
 
-def distinct_topics() -> list[str]:
+def distinct_topics(user_id: Optional[str] = None) -> list[str]:
     """Returns every non-empty topic label currently stored, alphabetically."""
     _ensure_schema()
+    params: list[Any] = []
+    query = "SELECT DISTINCT topic FROM generated_quizzes WHERE topic != ''"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+    query += " ORDER BY topic COLLATE NOCASE ASC"
+
     with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT DISTINCT topic FROM generated_quizzes WHERE topic != '' ORDER BY topic COLLATE NOCASE ASC"
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [row["topic"] for row in rows]
 
 
@@ -426,6 +538,7 @@ def save_document(
     word_count: int,
     chunk_count: int,
     status: str = "ready",
+    user_id: Optional[str] = None,
 ) -> str:
     """Persists metadata for an ingested document."""
     if not document_id:
@@ -444,58 +557,71 @@ def save_document(
         int(chunk_count),
         status,
         _utc_now_iso(),
+        user_id or None,
     )
 
     with get_connection() as conn, conn:
         conn.execute(
             """
             INSERT INTO documents
-                (id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             record,
         )
     return record[0]
 
 
-def get_document(document_id: str) -> Optional[dict[str, Any]]:
+def get_document(document_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     _ensure_schema()
     if not document_id:
         return None
 
+    params: list[Any] = [str(document_id).strip()]
+    query = """
+        SELECT id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at, user_id
+        FROM documents WHERE id = ?
+    """
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at
-            FROM documents WHERE id = ?
-            """,
-            (str(document_id).strip(),),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
     return dict(row) if row else None
 
 
-def list_documents(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+def list_documents(limit: int = 20, offset: int = 0, user_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Returns ingested document rows, newest first."""
     _ensure_schema()
     safe_limit = max(1, min(int(limit), MAX_HISTORY_PAGE_SIZE))
     safe_offset = max(0, int(offset))
 
+    params: list[Any] = []
+    query = """
+        SELECT id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at, user_id
+        FROM documents
+    """
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" WHERE {owner}"
+    query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
+    params.extend([safe_limit, safe_offset])
+
     with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, filename, extension, size_bytes, page_count, character_count, word_count, chunk_count, status, created_at
-            FROM documents
-            ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?
-            """,
-            (safe_limit, safe_offset),
-        ).fetchall()
+        rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
 
 
-def count_documents() -> int:
+def count_documents(user_id: Optional[str] = None) -> int:
     _ensure_schema()
+    params: list[Any] = []
+    query = "SELECT COUNT(*) AS total FROM documents"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" WHERE {owner}"
     with get_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS total FROM documents").fetchone()
+        row = conn.execute(query, params).fetchone()
     return int(row["total"]) if row else 0
 
 
@@ -510,6 +636,7 @@ def save_study_material(
     topic: str = "",
     source_filename: Optional[str] = None,
     document_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """Stores a generated study resource bundle as serialized JSON text."""
     if not material_id:
@@ -526,14 +653,15 @@ def save_study_material(
         source_filename or None,
         serialize_quiz_data(content),
         _utc_now_iso(),
+        user_id or None,
     )
 
     with get_connection() as conn, conn:
         conn.execute(
             """
             INSERT INTO study_materials
-                (id, document_id, topic, material_type, title, source_filename, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, document_id, topic, material_type, title, source_filename, content, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             record,
         )
@@ -541,6 +669,7 @@ def save_study_material(
 
 
 def _study_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
+    keys = row.keys()
     return {
         "material_id": row["id"],
         "document_id": row["document_id"],
@@ -550,36 +679,54 @@ def _study_row_to_record(row: sqlite3.Row) -> dict[str, Any]:
         "source_filename": row["source_filename"],
         "content": deserialize_quiz_data(row["content"]),
         "created_at": row["created_at"],
+        "user_id": row["user_id"] if "user_id" in keys else None,
     }
 
 
-def get_study_material(material_id: str) -> Optional[dict[str, Any]]:
+def get_study_material(material_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     _ensure_schema()
     if not material_id:
         return None
 
+    params: list[Any] = [str(material_id).strip()]
+    query = """
+        SELECT id, document_id, topic, material_type, title, source_filename, content, created_at, user_id
+        FROM study_materials WHERE id = ?
+    """
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn:
-        row = conn.execute(
-            """
-            SELECT id, document_id, topic, material_type, title, source_filename, content, created_at
-            FROM study_materials WHERE id = ?
-            """,
-            (str(material_id).strip(),),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _study_row_to_record(row) if row else None
 
 
-def list_study_materials(limit: int = 20, offset: int = 0, material_type: Optional[str] = None) -> list[dict[str, Any]]:
+def list_study_materials(
+    limit: int = 20,
+    offset: int = 0,
+    material_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
     """Returns stored study resources, newest first."""
     _ensure_schema()
     safe_limit = max(1, min(int(limit), MAX_HISTORY_PAGE_SIZE))
     safe_offset = max(0, int(offset))
 
-    query = "SELECT id, document_id, topic, material_type, title, source_filename, content, created_at FROM study_materials"
+    query = (
+        "SELECT id, document_id, topic, material_type, title, source_filename, content, created_at, user_id "
+        "FROM study_materials"
+    )
     params: list[Any] = []
+    filters: list[str] = []
     if (material_type or "").strip():
-        query += " WHERE material_type = ?"
+        filters.append("material_type = ?")
         params.append(material_type.strip())
+    owner = _owner_clause(user_id, params)
+    if owner:
+        filters.append(owner)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
     params.extend([safe_limit, safe_offset])
 
@@ -588,20 +735,31 @@ def list_study_materials(limit: int = 20, offset: int = 0, material_type: Option
     return [_study_row_to_record(row) for row in rows]
 
 
-def count_study_materials() -> int:
+def count_study_materials(user_id: Optional[str] = None) -> int:
     _ensure_schema()
+    params: list[Any] = []
+    query = "SELECT COUNT(*) AS total FROM study_materials"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" WHERE {owner}"
     with get_connection() as conn:
-        row = conn.execute("SELECT COUNT(*) AS total FROM study_materials").fetchone()
+        row = conn.execute(query, params).fetchone()
     return int(row["total"]) if row else 0
 
 
-def delete_study_material(material_id: str) -> bool:
+def delete_study_material(material_id: str, user_id: Optional[str] = None) -> bool:
     _ensure_schema()
     if not material_id:
         return False
 
+    params: list[Any] = [str(material_id).strip()]
+    query = "DELETE FROM study_materials WHERE id = ?"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn, conn:
-        cursor = conn.execute("DELETE FROM study_materials WHERE id = ?", (str(material_id).strip(),))
+        cursor = conn.execute(query, params)
         return cursor.rowcount > 0
 
 
@@ -624,6 +782,7 @@ def save_assessment_attempt(
     review: Any,
     topic: str = "",
     time_spent_seconds: float = 0.0,
+    user_id: Optional[str] = None,
 ) -> str:
     """Stores a graded learner attempt together with its answer key and review."""
     if not attempt_id:
@@ -650,6 +809,7 @@ def save_assessment_attempt(
         (topic or "").strip(),
         float(time_spent_seconds or 0.0),
         _utc_now_iso(),
+        user_id or None,
     )
 
     with get_connection() as conn, conn:
@@ -657,8 +817,8 @@ def save_assessment_attempt(
             """
             INSERT INTO assessment_attempts
                 (id, quiz_id, score, total_score, percentage, correct_answers, incorrect_answers, unanswered,
-                 partial_answers, total_questions, attempted, answers, review, topic, time_spent_seconds, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 partial_answers, total_questions, attempted, answers, review, topic, time_spent_seconds, created_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             record,
         )
@@ -667,11 +827,12 @@ def save_assessment_attempt(
 
 _ATTEMPT_COLUMNS = (
     "id, quiz_id, score, total_score, percentage, correct_answers, incorrect_answers, unanswered, "
-    "partial_answers, total_questions, attempted, answers, review, topic, time_spent_seconds, created_at"
+    "partial_answers, total_questions, attempted, answers, review, topic, time_spent_seconds, created_at, user_id"
 )
 
 
 def _attempt_row_to_record(row: sqlite3.Row, include_payloads: bool = True) -> dict[str, Any]:
+    keys = row.keys()
     record: dict[str, Any] = {
         "attempt_id": row["id"],
         "quiz_id": row["quiz_id"],
@@ -687,6 +848,7 @@ def _attempt_row_to_record(row: sqlite3.Row, include_payloads: bool = True) -> d
         "topic": row["topic"],
         "time_spent_seconds": round(float(row["time_spent_seconds"]), 1),
         "created_at": row["created_at"],
+        "user_id": row["user_id"] if "user_id" in keys else None,
     }
     if include_payloads:
         record["answers"] = deserialize_quiz_data(row["answers"])
@@ -694,16 +856,19 @@ def _attempt_row_to_record(row: sqlite3.Row, include_payloads: bool = True) -> d
     return record
 
 
-def get_assessment_attempt(attempt_id: str) -> Optional[dict[str, Any]]:
+def get_assessment_attempt(attempt_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     _ensure_schema()
     if not attempt_id:
         return None
 
+    params: list[Any] = [str(attempt_id).strip()]
+    query = f"SELECT {_ATTEMPT_COLUMNS} FROM {ATTEMPT_TABLE} WHERE id = ?"
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" AND {owner}"
+
     with get_connection() as conn:
-        row = conn.execute(
-            f"SELECT {_ATTEMPT_COLUMNS} FROM {ATTEMPT_TABLE} WHERE id = ?",
-            (str(attempt_id).strip(),),
-        ).fetchone()
+        row = conn.execute(query, params).fetchone()
     return _attempt_row_to_record(row) if row else None
 
 
@@ -711,6 +876,7 @@ def list_assessment_attempts(
     limit: int = 20,
     offset: int = 0,
     quiz_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Returns graded attempts, newest first."""
     _ensure_schema()
@@ -719,9 +885,15 @@ def list_assessment_attempts(
 
     query = f"SELECT {_ATTEMPT_COLUMNS} FROM {ATTEMPT_TABLE}"
     params: list[Any] = []
+    filters: list[str] = []
     if (quiz_id or "").strip():
-        query += " WHERE quiz_id = ?"
+        filters.append("quiz_id = ?")
         params.append(quiz_id.strip())
+    owner = _owner_clause(user_id, params)
+    if owner:
+        filters.append(owner)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
     params.extend([safe_limit, safe_offset])
 
@@ -730,13 +902,19 @@ def list_assessment_attempts(
     return [_attempt_row_to_record(row, include_payloads=False) for row in rows]
 
 
-def count_assessment_attempts(quiz_id: Optional[str] = None) -> int:
+def count_assessment_attempts(quiz_id: Optional[str] = None, user_id: Optional[str] = None) -> int:
     _ensure_schema()
     query = f"SELECT COUNT(*) AS total FROM {ATTEMPT_TABLE}"
     params: list[Any] = []
+    filters: list[str] = []
     if (quiz_id or "").strip():
-        query += " WHERE quiz_id = ?"
+        filters.append("quiz_id = ?")
         params.append(quiz_id.strip())
+    owner = _owner_clause(user_id, params)
+    if owner:
+        filters.append(owner)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
 
     with get_connection() as conn:
         row = conn.execute(query, params).fetchone()
@@ -756,12 +934,28 @@ def delete_assessment_attempts(quiz_id: str) -> int:
 # ==========================================================================
 # Aggregates used by the dashboard and performance pages
 # ==========================================================================
-def get_platform_statistics() -> dict[str, Any]:
+def _owner_sql_and(user_id: Optional[str]) -> tuple[str, list[Any]]:
+    """Returns an ownership predicate fragment prefixed with AND, plus its params."""
+    if not user_id:
+        return "", []
+    return " AND (user_id = ? OR user_id IS NULL)", [user_id]
+
+
+def _owner_sql_where(user_id: Optional[str]) -> tuple[str, list[Any]]:
+    """Returns an ownership predicate fragment prefixed with WHERE, plus its params."""
+    if not user_id:
+        return "", []
+    return " WHERE (user_id = ? OR user_id IS NULL)", [user_id]
+
+
+def get_platform_statistics(user_id: Optional[str] = None) -> dict[str, Any]:
     """Returns the aggregate counters rendered on the dashboard.
 
     Every value is derived from persisted rows; nothing here is fabricated.
     """
     _ensure_schema()
+
+    quiz_and, quiz_params = _owner_sql_and(user_id)
 
     with get_connection() as conn:
         quiz_row = conn.execute(
@@ -769,12 +963,22 @@ def get_platform_statistics() -> dict[str, Any]:
             SELECT COUNT(*) AS quiz_count,
                    COALESCE(SUM(num_questions), 0) AS question_count,
                    COALESCE(COUNT(DISTINCT topic), 0) AS topic_count
-            FROM {QUIZ_TABLE} WHERE topic != ''
-            """
+            FROM {QUIZ_TABLE} WHERE topic != ''{quiz_and}
+            """,
+            quiz_params,
         ).fetchone()
-        total_quiz_row = conn.execute(f"SELECT COUNT(*) AS total FROM {QUIZ_TABLE}").fetchone()
-        doc_row = conn.execute(f"SELECT COUNT(*) AS total FROM {DOCUMENT_TABLE}").fetchone()
-        study_row = conn.execute(f"SELECT COUNT(*) AS total FROM {STUDY_TABLE}").fetchone()
+        total_quiz_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM {QUIZ_TABLE}{_owner_sql_where(user_id)[0]}",
+            _owner_sql_where(user_id)[1],
+        ).fetchone()
+        doc_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM {DOCUMENT_TABLE}{_owner_sql_where(user_id)[0]}",
+            _owner_sql_where(user_id)[1],
+        ).fetchone()
+        study_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM {STUDY_TABLE}{_owner_sql_where(user_id)[0]}",
+            _owner_sql_where(user_id)[1],
+        ).fetchone()
         attempt_row = conn.execute(
             f"""
             SELECT COUNT(*) AS attempt_count,
@@ -782,8 +986,9 @@ def get_platform_statistics() -> dict[str, Any]:
                    COALESCE(MAX(percentage), 0) AS highest_percentage,
                    COALESCE(MIN(percentage), 0) AS lowest_percentage,
                    COALESCE(SUM(total_questions), 0) AS questions_answered
-            FROM {ATTEMPT_TABLE}
-            """
+            FROM {ATTEMPT_TABLE}{_owner_sql_where(user_id)[0]}
+            """,
+            _owner_sql_where(user_id)[1],
         ).fetchone()
 
     return {
@@ -800,34 +1005,36 @@ def get_platform_statistics() -> dict[str, Any]:
     }
 
 
-def get_recent_activity(limit: int = 8) -> list[dict[str, Any]]:
+def get_recent_activity(limit: int = 8, user_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Returns a unified, newest-first activity feed across every record type."""
     _ensure_schema()
     safe_limit = max(1, min(int(limit), MAX_HISTORY_PAGE_SIZE))
+
+    owner_where, owner_params = _owner_sql_where(user_id)
 
     with get_connection() as conn:
         quiz_rows = conn.execute(
             f"""
             SELECT id, topic, quiz_type, num_questions, source_filename, created_at
-            FROM {QUIZ_TABLE}
+            FROM {QUIZ_TABLE}{owner_where}
             ORDER BY created_at DESC, rowid DESC LIMIT ?
             """,
-            (safe_limit,),
+            [*owner_params, safe_limit],
         ).fetchall()
         study_rows = conn.execute(
-            f"SELECT id, topic, material_type, title, source_filename, created_at FROM {STUDY_TABLE} "
+            f"SELECT id, topic, material_type, title, source_filename, created_at FROM {STUDY_TABLE}{owner_where} "
             f"ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (safe_limit,),
+            [*owner_params, safe_limit],
         ).fetchall()
         attempt_rows = conn.execute(
-            f"SELECT id, quiz_id, percentage, correct_answers, total_questions, created_at FROM {ATTEMPT_TABLE} "
+            f"SELECT id, quiz_id, percentage, correct_answers, total_questions, created_at FROM {ATTEMPT_TABLE}{owner_where} "
             f"ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (safe_limit,),
+            [*owner_params, safe_limit],
         ).fetchall()
         document_rows = conn.execute(
-            f"SELECT id, filename, page_count, word_count, created_at FROM {DOCUMENT_TABLE} "
+            f"SELECT id, filename, page_count, word_count, created_at FROM {DOCUMENT_TABLE}{owner_where} "
             f"ORDER BY created_at DESC, rowid DESC LIMIT ?",
-            (safe_limit,),
+            [*owner_params, safe_limit],
         ).fetchall()
 
     feed: list[dict[str, Any]] = []
@@ -885,9 +1092,15 @@ def get_recent_activity(limit: int = 8) -> list[dict[str, Any]]:
     return feed[:safe_limit]
 
 
-def get_topic_performance() -> list[dict[str, Any]]:
+def get_topic_performance(user_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Returns per-topic attempt averages, highest first."""
     _ensure_schema()
+
+    owner_where = ""
+    params: list[Any] = []
+    if user_id:
+        owner_where = "WHERE (a.user_id = ? OR a.user_id IS NULL)"
+        params.append(user_id)
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -900,18 +1113,26 @@ def get_topic_performance() -> list[dict[str, Any]]:
                    COALESCE(SUM(a.total_questions), 0) AS questions_answered
             FROM {ATTEMPT_TABLE} AS a
             LEFT JOIN {QUIZ_TABLE} AS q ON q.id = a.quiz_id
+            {owner_where}
             GROUP BY COALESCE(NULLIF(a.topic, ''), q.topic, 'Unlabelled topic')
             ORDER BY average_percentage DESC, attempts DESC
-            """
+            """,
+            params,
         ).fetchall()
 
     return [dict(row) for row in rows]
 
 
-def get_recent_attempts(limit: int = 5) -> list[dict[str, Any]]:
+def get_recent_attempts(limit: int = 5, user_id: Optional[str] = None) -> list[dict[str, Any]]:
     """Returns the most recent attempts joined with their assessment titles."""
     _ensure_schema()
     safe_limit = max(1, min(int(limit), MAX_HISTORY_PAGE_SIZE))
+
+    owner_where = ""
+    params: list[Any] = []
+    if user_id:
+        owner_where = "WHERE (a.user_id = ? OR a.user_id IS NULL)"
+        params.append(user_id)
 
     with get_connection() as conn:
         rows = conn.execute(
@@ -921,9 +1142,10 @@ def get_recent_attempts(limit: int = 5) -> list[dict[str, Any]]:
                    json_extract(q.quiz_data, '$.quiz_title') AS quiz_title
             FROM {ATTEMPT_TABLE} AS a
             LEFT JOIN {QUIZ_TABLE} AS q ON q.id = a.quiz_id
+            {owner_where}
             ORDER BY a.created_at DESC, a.rowid DESC LIMIT ?
             """,
-            (safe_limit,),
+            [*params, safe_limit],
         ).fetchall()
 
     return [
@@ -939,6 +1161,389 @@ def get_recent_attempts(limit: int = 5) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+# ==========================================================================
+# users -- authenticated accounts (password or Google)
+# ==========================================================================
+_USER_COLUMNS = (
+    "id, email, full_name, picture_url, provider, provider_subject, "
+    "password_hash, created_at, updated_at, last_login_at"
+)
+
+
+def _user_row_to_record(row: sqlite3.Row, include_secret: bool = False) -> dict[str, Any]:
+    record = {
+        "user_id": row["id"],
+        "id": row["id"],
+        "email": row["email"],
+        "full_name": row["full_name"] or "",
+        "picture_url": row["picture_url"] or "",
+        "provider": row["provider"] or "password",
+        "provider_subject": row["provider_subject"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "last_login_at": row["last_login_at"],
+    }
+    if include_secret:
+        record["password_hash"] = row["password_hash"]
+    return record
+
+
+def create_user(
+    user_id: str,
+    email: str,
+    full_name: str = "",
+    picture_url: str = "",
+    provider: str = "password",
+    provider_subject: Optional[str] = None,
+    password_hash: Optional[str] = None,
+) -> dict[str, Any]:
+    """Inserts a new user, returning the persisted record (without the secret)."""
+    if not user_id or not str(user_id).strip():
+        raise ValueError("user_id must be a non-empty identifier.")
+    normalized_email = (email or "").strip().lower()
+    if not normalized_email:
+        raise ValueError("email must be a non-empty value.")
+
+    _ensure_schema()
+    now = _utc_now_iso()
+    with get_connection() as conn, conn:
+        conn.execute(
+            f"""
+            INSERT INTO {USER_TABLE}
+                (id, email, full_name, picture_url, provider, provider_subject, password_hash, created_at, updated_at, last_login_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(user_id).strip(),
+                normalized_email,
+                (full_name or "").strip(),
+                (picture_url or "").strip(),
+                (provider or "password").strip(),
+                provider_subject or None,
+                password_hash or None,
+                now,
+                now,
+                now,
+            ),
+        )
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE id = ?",
+            (str(user_id).strip(),),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else {}
+
+
+def get_user_by_id(user_id: str) -> Optional[dict[str, Any]]:
+    _ensure_schema()
+    if not user_id:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE id = ?",
+            (str(user_id).strip(),),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else None
+
+
+def get_user_by_email(email: str) -> Optional[dict[str, Any]]:
+    _ensure_schema()
+    if not (email or "").strip():
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE email = ? COLLATE NOCASE",
+            ((email or "").strip().lower(),),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else None
+
+
+def get_user_by_provider(provider: str, provider_subject: str) -> Optional[dict[str, Any]]:
+    _ensure_schema()
+    if not provider or not provider_subject:
+        return None
+    with get_connection() as conn:
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE provider = ? AND provider_subject = ?",
+            (provider.strip(), str(provider_subject).strip()),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else None
+
+
+def update_user_login(
+    user_id: str,
+    full_name: Optional[str] = None,
+    picture_url: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Refreshes profile fields and the login timestamp after a successful sign-in."""
+    _ensure_schema()
+    if not user_id:
+        return None
+
+    fields: list[str] = ["last_login_at = ?", "updated_at = ?"]
+    now = _utc_now_iso()
+    params: list[Any] = [now, now]
+    if full_name is not None:
+        fields.append("full_name = ?")
+        params.append(full_name.strip())
+    if picture_url is not None:
+        fields.append("picture_url = ?")
+        params.append(picture_url.strip())
+    params.append(str(user_id).strip())
+
+    with get_connection() as conn, conn:
+        conn.execute(
+            f"UPDATE {USER_TABLE} SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE id = ?",
+            (str(user_id).strip(),),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else None
+
+
+def update_user_profile(
+    user_id: str,
+    full_name: Optional[str] = None,
+    picture_url: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Updates editable profile fields (no login timestamp change)."""
+    _ensure_schema()
+    if not user_id:
+        return None
+
+    fields: list[str] = ["updated_at = ?"]
+    params: list[Any] = [_utc_now_iso()]
+    if full_name is not None:
+        fields.append("full_name = ?")
+        params.append(full_name.strip())
+    if picture_url is not None:
+        fields.append("picture_url = ?")
+        params.append(picture_url.strip())
+    params.append(str(user_id).strip())
+
+    with get_connection() as conn, conn:
+        conn.execute(f"UPDATE {USER_TABLE} SET {', '.join(fields)} WHERE id = ?", params)
+        row = conn.execute(
+            f"SELECT {_USER_COLUMNS} FROM {USER_TABLE} WHERE id = ?",
+            (str(user_id).strip(),),
+        ).fetchone()
+    return _user_row_to_record(row, include_secret=True) if row else None
+
+
+def link_user_provider(user_id: str, provider: str, provider_subject: str) -> bool:
+    """Attaches a federated identity (e.g. Google) to an existing local account."""
+    _ensure_schema()
+    if not user_id or not provider or not provider_subject:
+        return False
+    with get_connection() as conn, conn:
+        cursor = conn.execute(
+            f"UPDATE {USER_TABLE} SET provider = ?, provider_subject = ?, updated_at = ? WHERE id = ?",
+            (provider.strip(), str(provider_subject).strip(), _utc_now_iso(), str(user_id).strip()),
+        )
+        return cursor.rowcount > 0
+
+
+def set_user_password(user_id: str, password_hash: str) -> bool:
+    _ensure_schema()
+    if not user_id or not password_hash:
+        return False
+    with get_connection() as conn, conn:
+        cursor = conn.execute(
+            f"UPDATE {USER_TABLE} SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (password_hash, _utc_now_iso(), str(user_id).strip()),
+        )
+        return cursor.rowcount > 0
+
+
+def count_users() -> int:
+    _ensure_schema()
+    with get_connection() as conn:
+        row = conn.execute(f"SELECT COUNT(*) AS total FROM {USER_TABLE}").fetchone()
+    return int(row["total"]) if row else 0
+
+
+# ==========================================================================
+# sessions -- opaque server-side sessions (token digest is the only secret)
+# ==========================================================================
+def create_session(
+    session_id: str,
+    user_id: str,
+    token_hash: str,
+    csrf_token: str,
+    expires_at: str,
+) -> str:
+    if not session_id or not user_id or not token_hash:
+        raise ValueError("session_id, user_id and token_hash are required.")
+    _ensure_schema()
+    with get_connection() as conn, conn:
+        conn.execute(
+            f"""
+            INSERT INTO {SESSION_TABLE}
+                (id, user_id, token_hash, csrf_token, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(session_id).strip(),
+                str(user_id).strip(),
+                token_hash,
+                csrf_token,
+                expires_at,
+                _utc_now_iso(),
+            ),
+        )
+    return str(session_id).strip()
+
+
+def get_session_by_token_hash(token_hash: str) -> Optional[dict[str, Any]]:
+    """Returns the session joined with its user, or ``None`` when absent/expired."""
+    _ensure_schema()
+    if not token_hash:
+        return None
+
+    with get_connection() as conn:
+        row = conn.execute(
+            f"""
+            SELECT s.id AS session_id, s.user_id, s.csrf_token, s.expires_at, s.created_at AS session_created_at,
+                   u.id AS u_id, u.email, u.full_name, u.picture_url, u.provider, u.provider_subject,
+                   u.created_at AS user_created_at, u.updated_at AS user_updated_at, u.last_login_at
+            FROM {SESSION_TABLE} AS s
+            JOIN {USER_TABLE} AS u ON u.id = s.user_id
+            WHERE s.token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+
+    if not row:
+        return None
+
+    if (row["expires_at"] or "") <= _utc_now_iso():
+        delete_session_by_token_hash(token_hash)
+        return None
+
+    return {
+        "session_id": row["session_id"],
+        "user_id": row["user_id"],
+        "csrf_token": row["csrf_token"],
+        "expires_at": row["expires_at"],
+        "created_at": row["session_created_at"],
+        "user": {
+            "user_id": row["u_id"],
+            "id": row["u_id"],
+            "email": row["email"],
+            "full_name": row["full_name"] or "",
+            "picture_url": row["picture_url"] or "",
+            "provider": row["provider"] or "password",
+            "provider_subject": row["provider_subject"],
+            "created_at": row["user_created_at"],
+            "updated_at": row["user_updated_at"],
+            "last_login_at": row["last_login_at"],
+        },
+    }
+
+
+def delete_session_by_token_hash(token_hash: str) -> bool:
+    _ensure_schema()
+    if not token_hash:
+        return False
+    with get_connection() as conn, conn:
+        cursor = conn.execute(f"DELETE FROM {SESSION_TABLE} WHERE token_hash = ?", (token_hash,))
+        return cursor.rowcount > 0
+
+
+def delete_user_sessions(user_id: str, except_token_hash: Optional[str] = None) -> int:
+    """Revokes every session for a user, optionally preserving the current one."""
+    _ensure_schema()
+    if not user_id:
+        return 0
+    query = f"DELETE FROM {SESSION_TABLE} WHERE user_id = ?"
+    params: list[Any] = [str(user_id).strip()]
+    if except_token_hash:
+        query += " AND token_hash != ?"
+        params.append(except_token_hash)
+    with get_connection() as conn, conn:
+        cursor = conn.execute(query, params)
+        return int(cursor.rowcount or 0)
+
+
+def purge_expired_sessions() -> int:
+    _ensure_schema()
+    with get_connection() as conn, conn:
+        cursor = conn.execute(f"DELETE FROM {SESSION_TABLE} WHERE expires_at <= ?", (_utc_now_iso(),))
+        return int(cursor.rowcount or 0)
+
+
+def delete_session_by_token_hash_and_user(token_hash: str, user_id: str) -> bool:
+    _ensure_schema()
+    if not token_hash or not user_id:
+        return False
+    with get_connection() as conn, conn:
+        cursor = conn.execute(
+            f"DELETE FROM {SESSION_TABLE} WHERE token_hash = ? AND user_id = ?",
+            (token_hash, str(user_id).strip()),
+        )
+        return cursor.rowcount > 0
+
+
+# ==========================================================================
+# oauth_states -- single-use CSRF/PKCE state for the Google redirect flow
+# ==========================================================================
+def create_oauth_state(
+    state: str,
+    code_verifier: str,
+    redirect_uri: str,
+    expires_at: str,
+) -> str:
+    if not state or not code_verifier:
+        raise ValueError("state and code_verifier are required.")
+    _ensure_schema()
+    with get_connection() as conn, conn:
+        conn.execute(
+            f"""
+            INSERT INTO {OAUTH_STATE_TABLE} (state, code_verifier, redirect_uri, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (state, code_verifier, redirect_uri or "", expires_at, _utc_now_iso()),
+        )
+    return state
+
+
+def consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
+    """Atomically fetches then deletes a state row (single-use), validating expiry."""
+    _ensure_schema()
+    if not state:
+        return None
+
+    with get_connection() as conn, conn:
+        row = conn.execute(
+            f"SELECT state, code_verifier, redirect_uri, expires_at, created_at FROM {OAUTH_STATE_TABLE} WHERE state = ?",
+            (state,),
+        ).fetchone()
+        conn.execute(f"DELETE FROM {OAUTH_STATE_TABLE} WHERE state = ?", (state,))
+
+    if not row:
+        return None
+    if (row["expires_at"] or "") <= _utc_now_iso():
+        return None
+    return {
+        "state": row["state"],
+        "code_verifier": row["code_verifier"],
+        "redirect_uri": row["redirect_uri"],
+        "expires_at": row["expires_at"],
+        "created_at": row["created_at"],
+    }
+
+
+def purge_expired_oauth_states() -> int:
+    _ensure_schema()
+    with get_connection() as conn, conn:
+        cursor = conn.execute(
+            f"DELETE FROM {OAUTH_STATE_TABLE} WHERE expires_at <= ?",
+            (_utc_now_iso(),),
+        )
+        return int(cursor.rowcount or 0)
 
 
 # ==========================================================================
@@ -964,16 +1569,26 @@ async def async_save_quiz(
     source_filename: Optional[str] = None,
     difficulty: Optional[str] = None,
     document_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> str:
     """Async counterpart of :func:`save_quiz`."""
     return await _run_in_worker(
-        save_quiz, quiz_id, topic, quiz_type, num_questions, quiz_data, source_filename, difficulty, document_id
+        save_quiz,
+        quiz_id,
+        topic,
+        quiz_type,
+        num_questions,
+        quiz_data,
+        source_filename,
+        difficulty,
+        document_id,
+        user_id,
     )
 
 
-async def async_get_quiz_by_id(quiz_id: str) -> Optional[dict[str, Any]]:
+async def async_get_quiz_by_id(quiz_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
     """Async counterpart of :func:`get_quiz_by_id`."""
-    return await _run_in_worker(get_quiz_by_id, quiz_id)
+    return await _run_in_worker(get_quiz_by_id, quiz_id, user_id)
 
 
 async def async_list_quizzes(
@@ -981,96 +1596,182 @@ async def async_list_quizzes(
     offset: int = 0,
     topic: Optional[str] = None,
     quiz_type: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Async counterpart of :func:`list_quizzes`."""
-    return await _run_in_worker(list_quizzes, limit, offset, topic, quiz_type)
+    return await _run_in_worker(list_quizzes, limit, offset, topic, quiz_type, user_id)
 
 
-async def async_count_quizzes(topic: Optional[str] = None, quiz_type: Optional[str] = None) -> int:
+async def async_count_quizzes(
+    topic: Optional[str] = None,
+    quiz_type: Optional[str] = None,
+    user_id: Optional[str] = None,
+) -> int:
     """Async counterpart of :func:`count_quizzes`."""
-    return await _run_in_worker(count_quizzes, topic, quiz_type)
+    return await _run_in_worker(count_quizzes, topic, quiz_type, user_id)
 
 
-async def async_delete_quiz(quiz_id: str) -> bool:
+async def async_delete_quiz(quiz_id: str, user_id: Optional[str] = None) -> bool:
     """Async counterpart of :func:`delete_quiz`."""
-    return await _run_in_worker(delete_quiz, quiz_id)
+    return await _run_in_worker(delete_quiz, quiz_id, user_id)
 
 
-async def async_distinct_topics() -> list[str]:
-    return await _run_in_worker(distinct_topics)
+async def async_distinct_topics(user_id: Optional[str] = None) -> list[str]:
+    return await _run_in_worker(distinct_topics, user_id)
 
 
 async def async_save_document(*args: Any, **kwargs: Any) -> str:
     return await _run_in_worker(save_document, *args, **kwargs)
 
 
-async def async_get_document(document_id: str) -> Optional[dict[str, Any]]:
-    return await _run_in_worker(get_document, document_id)
+async def async_get_document(document_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_document, document_id, user_id)
 
 
-async def async_list_documents(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
-    return await _run_in_worker(list_documents, limit, offset)
+async def async_list_documents(
+    limit: int = 20,
+    offset: int = 0,
+    user_id: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    return await _run_in_worker(list_documents, limit, offset, user_id)
 
 
-async def async_count_documents() -> int:
-    return await _run_in_worker(count_documents)
+async def async_count_documents(user_id: Optional[str] = None) -> int:
+    return await _run_in_worker(count_documents, user_id)
 
 
 async def async_save_study_material(*args: Any, **kwargs: Any) -> str:
     return await _run_in_worker(save_study_material, *args, **kwargs)
 
 
-async def async_get_study_material(material_id: str) -> Optional[dict[str, Any]]:
-    return await _run_in_worker(get_study_material, material_id)
+async def async_get_study_material(material_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_study_material, material_id, user_id)
 
 
 async def async_list_study_materials(
     limit: int = 20,
     offset: int = 0,
     material_type: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    return await _run_in_worker(list_study_materials, limit, offset, material_type)
+    return await _run_in_worker(list_study_materials, limit, offset, material_type, user_id)
 
 
-async def async_count_study_materials() -> int:
-    return await _run_in_worker(count_study_materials)
+async def async_count_study_materials(user_id: Optional[str] = None) -> int:
+    return await _run_in_worker(count_study_materials, user_id)
 
 
-async def async_delete_study_material(material_id: str) -> bool:
-    return await _run_in_worker(delete_study_material, material_id)
+async def async_delete_study_material(material_id: str, user_id: Optional[str] = None) -> bool:
+    return await _run_in_worker(delete_study_material, material_id, user_id)
 
 
 async def async_save_assessment_attempt(*args: Any, **kwargs: Any) -> str:
     return await _run_in_worker(save_assessment_attempt, *args, **kwargs)
 
 
-async def async_get_assessment_attempt(attempt_id: str) -> Optional[dict[str, Any]]:
-    return await _run_in_worker(get_assessment_attempt, attempt_id)
+async def async_get_assessment_attempt(attempt_id: str, user_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_assessment_attempt, attempt_id, user_id)
 
 
 async def async_list_assessment_attempts(
     limit: int = 20,
     offset: int = 0,
     quiz_id: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    return await _run_in_worker(list_assessment_attempts, limit, offset, quiz_id)
+    return await _run_in_worker(list_assessment_attempts, limit, offset, quiz_id, user_id)
 
 
-async def async_count_assessment_attempts(quiz_id: Optional[str] = None) -> int:
-    return await _run_in_worker(count_assessment_attempts, quiz_id)
+async def async_count_assessment_attempts(quiz_id: Optional[str] = None, user_id: Optional[str] = None) -> int:
+    return await _run_in_worker(count_assessment_attempts, quiz_id, user_id)
 
 
-async def async_get_platform_statistics() -> dict[str, Any]:
-    return await _run_in_worker(get_platform_statistics)
+async def async_get_platform_statistics(user_id: Optional[str] = None) -> dict[str, Any]:
+    return await _run_in_worker(get_platform_statistics, user_id)
 
 
-async def async_get_recent_activity(limit: int = 8) -> list[dict[str, Any]]:
-    return await _run_in_worker(get_recent_activity, limit)
+async def async_get_recent_activity(limit: int = 8, user_id: Optional[str] = None) -> list[dict[str, Any]]:
+    return await _run_in_worker(get_recent_activity, limit, user_id)
 
 
-async def async_get_topic_performance() -> list[dict[str, Any]]:
-    return await _run_in_worker(get_topic_performance)
+async def async_get_topic_performance(user_id: Optional[str] = None) -> list[dict[str, Any]]:
+    return await _run_in_worker(get_topic_performance, user_id)
 
 
-async def async_get_recent_attempts(limit: int = 5) -> list[dict[str, Any]]:
-    return await _run_in_worker(get_recent_attempts, limit)
+async def async_get_recent_attempts(limit: int = 5, user_id: Optional[str] = None) -> list[dict[str, Any]]:
+    return await _run_in_worker(get_recent_attempts, limit, user_id)
+
+
+# --- Users -----------------------------------------------------------------
+async def async_create_user(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return await _run_in_worker(create_user, *args, **kwargs)
+
+
+async def async_get_user_by_id(user_id: str) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_user_by_id, user_id)
+
+
+async def async_get_user_by_email(email: str) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_user_by_email, email)
+
+
+async def async_get_user_by_provider(provider: str, provider_subject: str) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_user_by_provider, provider, provider_subject)
+
+
+async def async_update_user_login(
+    user_id: str,
+    full_name: Optional[str] = None,
+    picture_url: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(update_user_login, user_id, full_name, picture_url)
+
+
+async def async_update_user_profile(
+    user_id: str,
+    full_name: Optional[str] = None,
+    picture_url: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(update_user_profile, user_id, full_name, picture_url)
+
+
+async def async_link_user_provider(user_id: str, provider: str, provider_subject: str) -> bool:
+    return await _run_in_worker(link_user_provider, user_id, provider, provider_subject)
+
+
+async def async_set_user_password(user_id: str, password_hash: str) -> bool:
+    return await _run_in_worker(set_user_password, user_id, password_hash)
+
+
+# --- Sessions --------------------------------------------------------------
+async def async_create_session(*args: Any, **kwargs: Any) -> str:
+    return await _run_in_worker(create_session, *args, **kwargs)
+
+
+async def async_get_session_by_token_hash(token_hash: str) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(get_session_by_token_hash, token_hash)
+
+
+async def async_delete_session_by_token_hash(token_hash: str) -> bool:
+    return await _run_in_worker(delete_session_by_token_hash, token_hash)
+
+
+async def async_delete_user_sessions(user_id: str, except_token_hash: Optional[str] = None) -> int:
+    return await _run_in_worker(delete_user_sessions, user_id, except_token_hash)
+
+
+async def async_purge_expired_sessions() -> int:
+    return await _run_in_worker(purge_expired_sessions)
+
+
+# --- OAuth states ----------------------------------------------------------
+async def async_create_oauth_state(*args: Any, **kwargs: Any) -> str:
+    return await _run_in_worker(create_oauth_state, *args, **kwargs)
+
+
+async def async_consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
+    return await _run_in_worker(consume_oauth_state, state)
+
+
+async def async_purge_expired_oauth_states() -> int:
+    return await _run_in_worker(purge_expired_oauth_states)

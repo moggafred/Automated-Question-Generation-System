@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path as FilePath
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -74,6 +75,19 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+
+# Cross-origin support for split deployments (e.g. SPA on Vercel, API on Render).
+# Credentials are enabled so the session cookie travels with the request; this
+# requires an explicit origin list (a wildcard is rejected by browsers).
+if settings.cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(settings.cors_origins),
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 
 @app.middleware("http")

@@ -1,0 +1,51 @@
+# Render Blueprint for the AQG backend (FastAPI + SQLite).
+#
+# Deploy: push this repo to GitHub, then in Render choose
+# "New +" -> "Blueprint" and point it at the repository. Render reads this file,
+# creates the service and prompts for the values marked `sync: false`.
+#
+# Important: the free plan uses an ephemeral filesystem, so the SQLite database
+# is reset on every deploy/restart. Attach a persistent disk (paid) and point
+# DATABASE_PATH at a file on it, or migrate to a managed Postgres instance.
+
+services:
+  - type: web
+    name: aqg-api
+    runtime: python
+    plan: free
+    rootDir: aqg-system
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/status
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: DEBUG
+        value: "False"
+      # A strong, stable signing key. Render generates it once and keeps it.
+      - key: AUTH_SECRET_KEY
+        generateValue: true
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      # Trust Render's TLS-terminating proxy.
+      - key: TRUST_PROXY_HEADERS
+        value: "true"
+      # Where the SPA lives (set after the Vercel project is created), e.g.
+      # https://aqg.vercel.app — used for OAuth redirects and CORS.
+      - key: FRONTEND_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      # Exact callback registered in Google Cloud Console, e.g.
+      # https://<render-service>.onrender.com/api/auth/google/callback
+      - key: GOOGLE_REDIRECT_URI
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: "gpt-4o"
+      - key: LLM_BASE_URL
+        sync: false
