@@ -217,7 +217,7 @@ export default async function render({ query = {} } = {}) {
         </section>
       </div>
 
-      <aside class="card-stack">
+      <aside class="card-stack" data-rail>
         <section class="card">
           <div class="card__header">
             <h2 class="card__title">Ready to generate</h2>

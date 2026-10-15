@@ -67,7 +67,7 @@ export default async function render() {
         </div>
       </div>
 
-      <aside class="hero__aside">
+      <aside class="hero__aside" data-rail>
         <p class="hero__aside-title">Quick actions</p>
         <div class="hero__list">
           ${actions
@@ -124,7 +124,7 @@ export default async function render() {
         </div>
       </section>
 
-      <section class="card">
+      <section class="card" data-rail>
         <div class="card__header">
           <div>
             <h2 class="card__title">Latest attempts</h2>

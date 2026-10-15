@@ -120,7 +120,7 @@ async function renderStudio(query) {
         </section>
       </div>
 
-      <aside class="card-stack">
+      <aside class="card-stack" data-rail>
         <section class="card">
           <div class="card__header"><h2 class="card__title">Generate</h2></div>
           <div class="card__body" style="display:flex;flex-direction:column;gap:var(--space-4)">

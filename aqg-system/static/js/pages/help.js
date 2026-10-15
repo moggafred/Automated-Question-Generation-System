@@ -130,7 +130,7 @@ export default async function render() {
         </div>
       </section>
 
-      <section class="card">
+      <section class="card" data-rail>
         <div class="card__header"><h2 class="card__title">Study resources</h2></div>
         <div class="card__body">
           <ul class="bullet-list">

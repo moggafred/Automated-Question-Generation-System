@@ -117,7 +117,7 @@ export default async function render({ params }) {
         ${questions.map((question, index) => questionCard(question, index, questions.length, session)).join('')}
       </div>
 
-      <aside class="card-stack no-print">
+      <aside class="card-stack no-print" data-rail>
         <section class="card">
           <div class="card__header">
             <h2 class="card__title">Progress</h2>

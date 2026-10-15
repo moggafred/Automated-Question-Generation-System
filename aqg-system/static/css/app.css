@@ -1401,6 +1401,28 @@ body[data-drawer="open"] .sidebar-backdrop {
   grid-template-columns: minmax(0, 1fr);
 }
 
+/* Right-hand side panels ("rails") can be hidden from the top bar to reclaim
+   width; the choice is remembered per browser and restored on load. */
+.app-shell[data-rail='hidden'] [data-rail] {
+  display: none !important;
+}
+
+.app-shell[data-rail='hidden'] .split--sidebar,
+.app-shell[data-rail='hidden'] .quiz-layout,
+.app-shell[data-rail='hidden'] .hero,
+.app-shell[data-rail='hidden'] .pub-hero {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+#rail-toggle[aria-pressed='true'] {
+  color: var(--primary);
+}
+
+/* `.icon-button` sets `display`, which outranks the UA `[hidden]` rule. */
+#rail-toggle[hidden] {
+  display: none;
+}
+
 /* Upload dropzone */
 .dropzone {
   display: flex;

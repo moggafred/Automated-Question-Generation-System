@@ -123,7 +123,7 @@ export default async function render({ query = {} } = {}) {
             : ''
         }
       </div>
-      <aside class="pub-hero__aside" aria-label="What signing in unlocks">
+      <aside class="pub-hero__aside" data-rail aria-label="What signing in unlocks">
         <div class="pub-hero__panel">
           <p class="pub-hero__panel-title">Explore freely. Sign in when you create.</p>
           <p class="pub-hero__panel-text">

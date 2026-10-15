@@ -12,7 +12,9 @@ import { icon } from './icons.js';
 import { buildHash, isPublicHash, parseHash, start as startRouter } from './router.js';
 import {
   getTheme,
+  isRailHidden,
   isSidebarCollapsed,
+  setRailHidden,
   setSidebarCollapsed,
   setStatus,
   toggleTheme,
@@ -101,6 +103,40 @@ function applySidebarState() {
   const button = $('#sidebar-collapse');
   const slot = button?.querySelector('[data-icon-slot]');
   if (slot) slot.innerHTML = icon(collapsed ? 'chevronRight' : 'chevronLeft', { size: 20 });
+}
+
+// -- Right-hand side panel (rail) ----------------------------------------
+
+/** Applies the remembered rail state to the shell and its toggle button. */
+function applyRailState() {
+  const shell = $('#app-shell');
+  const button = $('#rail-toggle');
+  const hidden = isRailHidden();
+
+  if (shell) shell.dataset.rail = hidden ? 'hidden' : 'shown';
+  if (!button) return;
+
+  // `aria-pressed` carries the state; the label stays constant so assistive
+  // tech announces "Toggle side panel, pressed/unpressed", while the tooltip
+  // and icon hint at the action.
+  button.setAttribute('aria-pressed', String(!hidden));
+  button.title = hidden ? 'Show side panel' : 'Hide side panel';
+
+  const slot = button.querySelector('[data-icon-slot]');
+  if (slot) slot.innerHTML = icon(hidden ? 'panelRightOpen' : 'panelRightClose', { size: 20 });
+}
+
+/** Reveals the toggle only on pages that actually render a right-hand rail. */
+function syncRailToggle() {
+  const button = $('#rail-toggle');
+  const root = $('#page-root');
+  if (button) button.hidden = !(root && root.querySelector('[data-rail]'));
+}
+
+/** Toggles the rail and remembers the choice across sessions. */
+function toggleRail() {
+  setRailHidden(!isRailHidden());
+  applyRailState();
 }
 
 // -- Mobile drawer -------------------------------------------------------
@@ -217,6 +253,8 @@ function wireShellEvents() {
     toggleTheme();
   });
 
+  $('#rail-toggle')?.addEventListener('click', toggleRail);
+
   document.addEventListener('aqg:themechange', syncThemeButton);
 
   $('#sidebar-collapse')?.addEventListener('click', () => {
@@ -267,12 +305,14 @@ function resumeIntendedDestination() {
 function onView(view) {
   syncTopbar(view);
   syncSearchWithRoute();
+  syncRailToggle();
   document.body.dataset.booted = 'true';
 }
 
 async function boot() {
   hydrateShell();
   applySidebarState();
+  applyRailState();
   syncThemeButton();
   wireShellEvents();
   wireGlobalSearch();

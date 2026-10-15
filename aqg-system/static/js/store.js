@@ -9,6 +9,7 @@
 const KEYS = {
   theme: 'aqg.theme',
   sidebar: 'aqg.sidebar',
+  rail: 'aqg.rail',
   generate: 'aqg.generate-prefs',
   study: 'aqg.study-prefs',
 };
@@ -76,6 +77,17 @@ export function isSidebarCollapsed() {
 export function setSidebarCollapsed(collapsed) {
   writeText(KEYS.sidebar, collapsed ? 'collapsed' : 'expanded');
   return collapsed;
+}
+
+// -- Right-hand side panel (rail) -----------------------------------------
+
+export function isRailHidden() {
+  return readText(KEYS.rail) === 'hidden';
+}
+
+export function setRailHidden(hidden) {
+  writeText(KEYS.rail, hidden ? 'hidden' : 'shown');
+  return hidden;
 }
 
 // -- Platform metadata (limits, vocabularies) ---------------------------
