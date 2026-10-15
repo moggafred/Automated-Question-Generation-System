@@ -90,6 +90,7 @@ _SCHEMA_STATEMENTS = (
         state TEXT PRIMARY KEY,
         code_verifier TEXT NOT NULL,
         redirect_uri TEXT NOT NULL DEFAULT '',
+        return_to TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
         expires_at TEXT NOT NULL
     )
@@ -180,6 +181,10 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (DOCUMENT_TABLE, "user_id", "TEXT"),
     (STUDY_TABLE, "user_id", "TEXT"),
     (ATTEMPT_TABLE, "user_id", "TEXT"),
+    # Post-sign-in destination. Lets the SPA resume the exact feature the visitor
+    # was trying to open before the Google round trip. Always a validated,
+    # same-origin relative path (see ``api.routers.auth._safe_return_to``).
+    (OAUTH_STATE_TABLE, "return_to", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # Indexes that depend on migrated columns are created after the ALTERs run.
@@ -1495,6 +1500,7 @@ def create_oauth_state(
     code_verifier: str,
     redirect_uri: str,
     expires_at: str,
+    return_to: str = "",
 ) -> str:
     if not state or not code_verifier:
         raise ValueError("state and code_verifier are required.")
@@ -1502,10 +1508,10 @@ def create_oauth_state(
     with get_connection() as conn, conn:
         conn.execute(
             f"""
-            INSERT INTO {OAUTH_STATE_TABLE} (state, code_verifier, redirect_uri, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO {OAUTH_STATE_TABLE} (state, code_verifier, redirect_uri, return_to, expires_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (state, code_verifier, redirect_uri or "", expires_at, _utc_now_iso()),
+            (state, code_verifier, redirect_uri or "", return_to or "", expires_at, _utc_now_iso()),
         )
     return state
 
@@ -1518,7 +1524,7 @@ def consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
 
     with get_connection() as conn, conn:
         row = conn.execute(
-            f"SELECT state, code_verifier, redirect_uri, expires_at, created_at FROM {OAUTH_STATE_TABLE} WHERE state = ?",
+            f"SELECT state, code_verifier, redirect_uri, return_to, expires_at, created_at FROM {OAUTH_STATE_TABLE} WHERE state = ?",
             (state,),
         ).fetchone()
         conn.execute(f"DELETE FROM {OAUTH_STATE_TABLE} WHERE state = ?", (state,))
@@ -1531,6 +1537,7 @@ def consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
         "state": row["state"],
         "code_verifier": row["code_verifier"],
         "redirect_uri": row["redirect_uri"],
+        "return_to": row["return_to"] or "",
         "expires_at": row["expires_at"],
         "created_at": row["created_at"],
     }

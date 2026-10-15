@@ -1,10 +1,15 @@
 /**
- * Authentication client: session state, the sign-in gate and the account menu.
+ * Authentication client: session state, the sign-in modal and the account menu.
  *
  * The backend is the source of truth -- this module only mirrors the resolved
  * principal for rendering, and never decides access on its own. When the API
- * reports a 401 (see `api.js`) the shell re-gates via the `aqg:unauthorized`
- * event.
+ * reports a 401 (see `api.js`) the shell re-opens the sign-in modal via the
+ * `aqg:unauthorized` event.
+ *
+ * Public visitors browse the dashboard freely; the modal is opened on demand
+ * when a protected feature is requested, and the intended destination is
+ * carried through the sign-in round trip so the user resumes exactly where they
+ * were headed.
  */
 
 import {
@@ -24,9 +29,26 @@ import { toastSuccess } from './toast.js';
 let currentUser = null;
 let providerState = { google: false, emailPassword: true, configured: false };
 
+/** Where the user should land after a successful sign-in (hash-route path). */
+const RETURN_TO_STORAGE_KEY = 'aqg.returnTo';
+const RETURN_TO_MAX_AGE_MS = 20 * 60 * 1000;
+
 const OAUTH_ERROR_MESSAGES = {
   google_failed: 'Google sign-in could not be completed. Please try again.',
   google_cancelled: 'Google sign-in was cancelled.',
+  google_invalid: 'That sign-in link was invalid or has expired.',
+};
+
+/** Friendly labels so the modal can name the feature the visitor asked for. */
+const DESTINATION_LABELS = {
+  '/dashboard': 'your dashboard',
+  '/generate': 'question generation',
+  '/study': 'the study material generator',
+  '/history': 'your assessment history',
+  '/assessments': 'your assessments',
+  '/performance': 'your performance analytics',
+  '/documents': 'your documents',
+  '/settings': 'your account settings',
 };
 
 /** The signed-in principal, or null when signed out. */
@@ -44,7 +66,7 @@ export function getProviders() {
   return { ...providerState };
 }
 
-/** Turns an OAuth redirect code into a message the gate can display. */
+/** Turns an OAuth redirect code into a message the modal can display. */
 export function oauthErrorMessage(code) {
   if (!code) return '';
   return OAUTH_ERROR_MESSAGES[code] || 'Sign-in could not be completed. Please try again.';
@@ -98,117 +120,256 @@ function providerLabel(provider) {
   return provider === 'google' ? 'Google' : 'Email';
 }
 
-// -- Sign-in gate --------------------------------------------------------
+// -- Intended-destination tracking ---------------------------------------
+
+/** Normalises any hash route into a leading-slash path like `/generate`. */
+function normalisePath(path) {
+  const value = String(path || '').trim();
+  if (!value) return '';
+  const withoutHash = value.startsWith('#') ? value.slice(1) : value;
+  return withoutHash.startsWith('/') ? withoutHash : `/${withoutHash}`;
+}
+
+/** Remembers where the user wanted to go across the sign-in round trip. */
+export function setPendingDestination(path) {
+  const clean = normalisePath(path);
+  if (!clean) return;
+  try {
+    sessionStorage.setItem(RETURN_TO_STORAGE_KEY, JSON.stringify({ path: clean, at: Date.now() }));
+  } catch {
+    /* Private mode: the in-memory fallback below still works for this tab. */
+  }
+  memoDestination = { path: clean, at: Date.now() };
+}
+
+let memoDestination = null;
+
+/** Returns the remembered destination without clearing it, or null. */
+export function peekPendingDestination() {
+  if (memoDestination) return memoDestination.path;
+  try {
+    const raw = sessionStorage.getItem(RETURN_TO_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed.path !== 'string') return null;
+    if (typeof parsed.at === 'number' && Date.now() - parsed.at > RETURN_TO_MAX_AGE_MS) {
+      sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
+      return null;
+    }
+    return parsed.path;
+  } catch {
+    return null;
+  }
+}
+
+/** Returns and clears the remembered destination. */
+export function consumePendingDestination() {
+  const path = peekPendingDestination();
+  clearPendingDestination();
+  return path;
+}
+
+/** Forgets any remembered destination. */
+export function clearPendingDestination() {
+  memoDestination = null;
+  try {
+    sessionStorage.removeItem(RETURN_TO_STORAGE_KEY);
+  } catch {
+    /* Nothing to clear. */
+  }
+}
+
+/** Builds the validated `next` parameter the backend expects for Google OAuth. */
+function toNextParam(path) {
+  const clean = normalisePath(path);
+  return clean ? `/#${clean}` : '';
+}
+
+/** Human-readable name of the pending destination, for the modal copy. */
+function destinationLabel(path) {
+  if (!path) return '';
+  const base = path.split('?')[0];
+  return DESTINATION_LABELS[base] || 'the requested feature';
+}
+
+// -- Sign-in modal -------------------------------------------------------
+
+let lastFocused = null;
+let modalKeyHandler = null;
+
+/** True while the sign-in modal is on screen. */
+export function isAuthModalOpen() {
+  const modal = $('#auth-modal');
+  return Boolean(modal && !modal.hidden);
+}
+
+/** Closes the sign-in modal and restores focus to the opener. */
+export function closeAuthModal() {
+  const modal = $('#auth-modal');
+  if (modal) {
+    modal.hidden = true;
+    modal.innerHTML = '';
+  }
+  delete document.body.dataset.modal;
+  if (modalKeyHandler) {
+    document.removeEventListener('keydown', modalKeyHandler);
+    modalKeyHandler = null;
+  }
+  if (lastFocused && typeof lastFocused.focus === 'function') {
+    lastFocused.focus();
+  }
+  lastFocused = null;
+}
 
 /**
- * Renders the full-screen sign-in gate into `container`.
+ * Renders and opens the sign-in modal.
  *
- * @param {HTMLElement} container
- * @param {{message?: string}} [options]
+ * @param {{message?: string, returnTo?: string, silent?: boolean}} [options]
+ *   `returnTo` records the intended destination. When omitted the previously
+ *   remembered destination (if any) is kept; otherwise a safe default of the
+ *   personalized dashboard is used.
  */
-export function renderGate(container, options = {}) {
+export function openAuthModal(options = {}) {
+  const modal = $('#auth-modal');
+  if (!modal) return;
+
+  if (typeof options.returnTo === 'string') {
+    setPendingDestination(options.returnTo);
+  } else if (!peekPendingDestination()) {
+    setPendingDestination('/dashboard');
+  }
+
+  const destination = peekPendingDestination();
   const { google, emailPassword, configured } = providerState;
   const message = options.message || '';
-
   const noMethods = !google && !emailPassword;
 
-  container.innerHTML = `
-    <div class="auth-gate__panel" role="dialog" aria-labelledby="auth-title">
-      <div class="auth-gate__aside">
-        <div class="auth-gate__brand">
-          <span class="auth-gate__logo" data-icon-slot="sparkle" aria-hidden="true"></span>
-          <span class="auth-gate__wordmark">
-            <span class="auth-gate__name" data-app-name>AQG</span>
-            <span class="auth-gate__tagline">Assessment &amp; Study</span>
-          </span>
-        </div>
-        <p class="auth-gate__pitch">
-          Turn any document into grounded assessments, study material and real performance
-          insight -- powered by retrieval-augmented AI.
-        </p>
-        <ul class="auth-gate__points">
-          <li><span data-icon-slot="shield" aria-hidden="true"></span> Your material stays private to your account</li>
-          <li><span data-icon-slot="sparkle" aria-hidden="true"></span> Questions grounded in the source, every time</li>
-          <li><span data-icon-slot="trending" aria-hidden="true"></span> Track progress across every attempt</li>
-        </ul>
+  const appName = $('[data-app-name]')?.textContent?.trim() || 'AQG';
+  const appTagline = $('[data-app-tagline]')?.textContent?.trim() || 'Assessment & Study';
+
+  lastFocused = document.activeElement;
+
+  modal.innerHTML = `
+    <div class="auth-modal__backdrop" data-action="close"></div>
+    <div class="auth-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="auth-modal-title">
+      <button type="button" class="auth-modal__close icon-button" data-action="close" aria-label="Close and return to the dashboard">
+        <span data-icon-slot="close" aria-hidden="true"></span>
+      </button>
+
+      <div class="auth-modal__brand">
+        <span class="auth-modal__logo" aria-hidden="true">${escapeHtml(appName.slice(0, 2).toUpperCase())}</span>
+        <span class="auth-modal__wordmark">
+          <span class="auth-modal__name">${escapeHtml(appName)}</span>
+          <span class="auth-modal__tagline">${escapeHtml(appTagline)}</span>
+        </span>
       </div>
 
-      <div class="auth-gate__body">
-        <div class="auth-gate__heading">
-          <h1 class="auth-gate__title" id="auth-title">Welcome back</h1>
-          <p class="auth-gate__subtitle" id="auth-subtitle">Sign in to continue to your workspace.</p>
-        </div>
-
-        ${message ? `<div class="auth-gate__alert" role="alert"><span data-icon-slot="alert" aria-hidden="true"></span><span>${escapeHtml(message)}</span></div>` : ''}
-
-        ${
-          noMethods
-            ? `<div class="auth-gate__alert" role="alert"><span data-icon-slot="info" aria-hidden="true"></span><span>Sign-in is not configured on this deployment. Please contact the administrator.</span></div>`
-            : ''
-        }
-
-        ${
-          emailPassword
-            ? `
-        <div class="auth-gate__tabs" role="tablist" aria-label="Sign in or create an account">
-          <button type="button" class="auth-gate__tab" role="tab" data-mode="login" aria-selected="true">Sign in</button>
-          <button type="button" class="auth-gate__tab" role="tab" data-mode="register" aria-selected="false">Create account</button>
-        </div>
-
-        <form class="auth-gate__form" id="auth-form" novalidate>
-          <div class="field" data-register-only hidden>
-            <label class="field__label" for="auth-name">Full name</label>
-            <input class="input" id="auth-name" name="full_name" type="text" autocomplete="name" placeholder="Ada Lovelace" />
-          </div>
-          <div class="field">
-            <label class="field__label" for="auth-email">Email</label>
-            <input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
-          </div>
-          <div class="field">
-            <label class="field__label" for="auth-password">Password</label>
-            <input class="input" id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
-          </div>
-          <div class="field" data-register-only hidden>
-            <label class="field__label" for="auth-confirm">Confirm password</label>
-            <input class="input" id="auth-confirm" name="confirm" type="password" autocomplete="new-password" placeholder="••••••••" />
-          </div>
-          <p class="field__error" id="auth-error" role="alert" hidden></p>
-          <button type="submit" class="btn btn--primary btn--lg btn--block" id="auth-submit">Sign in</button>
-        </form>`
-            : ''
-        }
-
-        ${
-          google && emailPassword
-            ? '<div class="auth-gate__divider"><span>or</span></div>'
-            : ''
-        }
-
-        ${
-          google
-            ? `
-        <button type="button" class="btn btn--secondary btn--lg btn--block auth-gate__google" id="auth-google">
-          <span data-icon-slot="google" aria-hidden="true"></span><span>Continue with Google</span>
-        </button>`
-            : ''
-        }
-
-        <p class="auth-gate__legal">
-          By continuing you agree to use this platform responsibly. We store only what you create
-          and never share it with third parties.
+      <div class="auth-modal__heading">
+        <h1 class="auth-modal__title" id="auth-modal-title">Welcome to ${escapeHtml(appName)}</h1>
+        <p class="auth-modal__subtitle">
+          Sign in to start generating intelligent questions, quizzes, summaries, flashcards, and
+          personalized study materials from your learning documents.
         </p>
       </div>
+
+      ${
+        destination
+          ? `<p class="auth-modal__intent">
+               <span data-icon-slot="arrowRight" aria-hidden="true"></span>
+               <span>After signing in you will continue to <strong>${escapeHtml(destinationLabel(destination))}</strong>.</span>
+             </p>`
+          : ''
+      }
+
+      ${message ? `<div class="auth-modal__alert" role="alert"><span data-icon-slot="alert" aria-hidden="true"></span><span>${escapeHtml(message)}</span></div>` : ''}
+
+      ${
+        noMethods
+          ? `<div class="auth-modal__alert" role="alert"><span data-icon-slot="info" aria-hidden="true"></span><span>Sign-in is not configured on this deployment. Please contact the administrator.</span></div>`
+          : ''
+      }
+
+      ${
+        google
+          ? `
+      <button type="button" class="btn btn--primary btn--lg btn--block auth-modal__google" id="auth-google">
+        <span data-icon-slot="google" aria-hidden="true"></span><span>Continue with Google</span>
+      </button>`
+          : ''
+      }
+
+      ${google && emailPassword ? '<div class="auth-modal__divider"><span>or</span></div>' : ''}
+
+      ${
+        emailPassword
+          ? `
+      <div class="auth-modal__tabs" role="tablist" aria-label="Sign in or create an account">
+        <button type="button" class="auth-modal__tab" role="tab" data-mode="login" aria-selected="true">Sign in</button>
+        <button type="button" class="auth-modal__tab" role="tab" data-mode="register" aria-selected="false">Create account</button>
+      </div>
+
+      <form class="auth-modal__form" id="auth-form" novalidate>
+        <div class="field" data-register-only hidden>
+          <label class="field__label" for="auth-name">Full name</label>
+          <input class="input" id="auth-name" name="full_name" type="text" autocomplete="name" placeholder="Ada Lovelace" />
+        </div>
+        <div class="field">
+          <label class="field__label" for="auth-email">Email</label>
+          <input class="input" id="auth-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" required />
+        </div>
+        <div class="field">
+          <label class="field__label" for="auth-password">Password</label>
+          <input class="input" id="auth-password" name="password" type="password" autocomplete="current-password" placeholder="••••••••" required />
+        </div>
+        <div class="field" data-register-only hidden>
+          <label class="field__label" for="auth-confirm">Confirm password</label>
+          <input class="input" id="auth-confirm" name="confirm" type="password" autocomplete="new-password" placeholder="••••••••" />
+        </div>
+        <p class="field__error" id="auth-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn--secondary btn--block" id="auth-submit">Sign in</button>
+      </form>`
+          : ''
+      }
+
+      <p class="auth-modal__legal">
+        <span data-icon-slot="shield" aria-hidden="true"></span>
+        <span>
+          Your documents and results are private to your account and are never shared with third
+          parties. Authentication is secured with Google OAuth 2.0 / OpenID Connect and encrypted
+          session cookies.
+        </span>
+      </p>
+
+      <button type="button" class="btn btn--ghost btn--block" data-action="close">Back to Dashboard</button>
     </div>`;
 
-  hydrateIcons(container, icon);
+  hydrateIcons(modal, icon);
+  modal.hidden = false;
+  document.body.dataset.modal = 'open';
 
-  const form = container.querySelector('#auth-form');
-  const errorNode = container.querySelector('#auth-error');
-  const submit = container.querySelector('#auth-submit');
-  const title = container.querySelector('#auth-title');
-  const subtitle = container.querySelector('#auth-subtitle');
-  const tabs = Array.from(container.querySelectorAll('.auth-gate__tab'));
-  const registerFields = Array.from(container.querySelectorAll('[data-register-only]'));
+  wireModal(modal);
+  modalKeyHandler = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeAuthModal();
+    }
+  };
+  document.addEventListener('keydown', modalKeyHandler);
+
+  // Focus the primary action for keyboard and screen-reader users.
+  const first = modal.querySelector('#auth-google') || modal.querySelector('#auth-email') || modal.querySelector('[data-action="close"]');
+  first?.focus();
+}
+
+/** Wires the freshly-rendered modal's interactive elements. */
+function wireModal(modal) {
+  const form = modal.querySelector('#auth-form');
+  const errorNode = modal.querySelector('#auth-error');
+  const submit = modal.querySelector('#auth-submit');
+  const title = modal.querySelector('#auth-modal-title');
+  const subtitle = modal.querySelector('.auth-modal__subtitle');
+  const tabs = Array.from(modal.querySelectorAll('.auth-modal__tab'));
+  const registerFields = Array.from(modal.querySelectorAll('[data-register-only]'));
 
   let mode = 'login';
 
@@ -226,19 +387,23 @@ export function renderGate(container, options = {}) {
     });
 
     const isRegister = next === 'register';
-    if (title) title.textContent = isRegister ? 'Create your account' : 'Welcome back';
+    if (title) title.textContent = isRegister ? 'Create your account' : `Welcome to ${getName()}`;
     if (subtitle) {
       subtitle.textContent = isRegister
-        ? 'Start turning your material into assessments in seconds.'
-        : 'Sign in to continue to your workspace.';
+        ? 'Start turning your learning documents into assessments, summaries and flashcards.'
+        : 'Sign in to start generating intelligent questions, quizzes, summaries, flashcards, and personalized study materials from your learning documents.';
     }
     if (submit) submit.textContent = isRegister ? 'Create account' : 'Sign in';
 
-    const password = container.querySelector('#auth-password');
+    const password = modal.querySelector('#auth-password');
     if (password) password.setAttribute('autocomplete', isRegister ? 'new-password' : 'current-password');
 
     showError('');
   };
+
+  modal.querySelectorAll('[data-action="close"]').forEach((node) => {
+    node.addEventListener('click', () => closeAuthModal());
+  });
 
   tabs.forEach((tab) => {
     tab.addEventListener('click', () => applyMode(tab.dataset.mode));
@@ -276,6 +441,7 @@ export function renderGate(container, options = {}) {
         } else {
           await loginWithPassword({ email, password });
         }
+        // A full reload re-resolves the session and resumes the intended route.
         window.location.reload();
       } catch (error) {
         showError(safeMessage(error));
@@ -284,12 +450,12 @@ export function renderGate(container, options = {}) {
     });
   }
 
-  const googleButton = container.querySelector('#auth-google');
+  const googleButton = modal.querySelector('#auth-google');
   if (googleButton) {
     googleButton.addEventListener('click', async () => {
       setBusy(googleButton, true);
       try {
-        const { authorization_url: url } = await startGoogleSignIn();
+        const { authorization_url: url } = await startGoogleSignIn(toNextParam(peekPendingDestination()));
         if (!url) throw new Error('The provider did not return a sign-in URL.');
         window.location.assign(url);
       } catch (error) {
@@ -300,6 +466,10 @@ export function renderGate(container, options = {}) {
   }
 
   applyMode('login');
+}
+
+function getName() {
+  return $('[data-app-name]')?.textContent?.trim() || 'AQG';
 }
 
 /** Converts any thrown value into an end-user-safe string. */
@@ -430,15 +600,16 @@ export function mountUserMenu() {
   });
 }
 
-/** Runs a logout request, then reloads so the shell re-gates cleanly. */
+/** Runs a logout request, then reloads so the shell re-resolves cleanly. */
 async function endSession(request, message) {
   try {
     await request();
   } catch (error) {
-    // A failed logout should not trap the user; the gate will still appear.
+    // A failed logout should not trap the user; the shell will still re-resolve.
     console.warn('Sign-out request failed:', error);
   }
   currentUser = null;
+  clearPendingDestination();
   toastSuccess(message);
   window.setTimeout(() => window.location.reload(), 400);
 }

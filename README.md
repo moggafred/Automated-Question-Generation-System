@@ -2,10 +2,18 @@
 
 An AI-powered service utilizing FastAPI and LangChain to parse PDF files and compile accurate quizzes using Retrieval-Augmented Generation (RAG).
 
+The application lives in [`aqg-system/`](aqg-system/). The site opens on a **public
+dashboard** that needs no account; sign-in (Google OAuth 2.0 or email + password)
+is requested only when you use a feature that stores data, and you are returned to
+the feature you asked for afterwards. See
+[`aqg-system/README.md`](aqg-system/README.md) for the full architecture, API and
+deployment guide.
+
 ## 🛠️ Local Setup and Configuration
 
 1. **Clone and Initialize Environment:**
    ```bash
+   cd aqg-system
    python -m venv venv
    source venv/bin/activate  # On Windows use: venv\Scripts\activate
    pip install -r requirements.txt

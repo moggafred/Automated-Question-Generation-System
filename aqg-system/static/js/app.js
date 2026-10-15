@@ -2,13 +2,14 @@
  * AQG application entry point.
  *
  * Boots the shell (icons, theme, navigation state, status indicator) and hands
- * page rendering to the hash router. Pages are lazily imported on navigation.
+ * page rendering to the hash router. The public dashboard is always available;
+ * authentication is requested lazily, only when a protected feature is used.
  */
 
 import { getStatus } from './api.js';
 import { $, debounce, hydrateIcons } from './dom.js';
 import { icon } from './icons.js';
-import { parseHash, start as startRouter } from './router.js';
+import { buildHash, isPublicHash, parseHash, start as startRouter } from './router.js';
 import {
   getTheme,
   isSidebarCollapsed,
@@ -19,10 +20,11 @@ import {
 import { toastError } from './toast.js';
 import {
   applyUserToChrome,
+  consumePendingDestination,
   loadAuth,
   mountUserMenu,
   oauthErrorMessage,
-  renderGate,
+  openAuthModal,
 } from './auth.js';
 
 const NAV_SELECTOR = '[data-nav]';
@@ -32,9 +34,6 @@ const NAV_SELECTOR = '[data-nav]';
 /** Fills every `[data-icon-slot]` in the static shell markup. */
 function hydrateShell() {
   hydrateIcons(document, icon);
-
-  const logo = $('#brand-logo');
-  if (logo) logo.innerHTML = icon('sparkle', { size: 22 });
 }
 
 function applyBrand(status) {
@@ -50,6 +49,13 @@ function applyBrand(status) {
 
   const brand = $('#brand-logo');
   if (brand) brand.textContent = name.slice(0, 2).toUpperCase();
+}
+
+/** Reflects the resolved session on the shell so CSS can swap the chrome. */
+function applyAuthChrome(user) {
+  const shell = $('#app-shell');
+  if (shell) shell.dataset.auth = user ? 'signed-in' : 'signed-out';
+  if (user) applyUserToChrome(user);
 }
 
 /** Highlights the nav item matching the active route. */
@@ -169,6 +175,41 @@ function syncSearchWithRoute() {
   input.value = query.search || '';
 }
 
+// -- Authentication entry points -----------------------------------------
+
+/** Opens the modal from the shell's Sign In / Get Started controls. */
+function wireAuthActions() {
+  document.querySelectorAll('[data-action="sign-in"], [data-action="get-started"]').forEach((node) => {
+    node.addEventListener('click', () => {
+      closeDrawer();
+      openAuthModal({ returnTo: '/dashboard' });
+    });
+  });
+}
+
+/** Turns a stored destination such as `/generate?type=essay` into a hash URL. */
+function destinationHash(destination) {
+  const clean = destination.startsWith('/') ? destination : `/${destination}`;
+  return `#${clean}`;
+}
+
+/**
+ * Handles a session that lapses mid-use: remember the protected page, return to
+ * the public dashboard, then invite the visitor to sign in again.
+ */
+function handleUnauthorized() {
+  const current = window.location.hash;
+  if (current && !isPublicHash(current)) {
+    const { path, query } = parseHash(current);
+    const search = new URLSearchParams(query).toString();
+    const destination = `${path}${search ? `?${search}` : ''}`;
+    openAuthModal({ message: 'Your session has expired. Please sign in again.', returnTo: destination });
+    window.location.hash = buildHash('/home');
+    return;
+  }
+  openAuthModal({ message: 'Your session has expired. Please sign in again.' });
+}
+
 // -- Boot ----------------------------------------------------------------
 
 function wireShellEvents() {
@@ -204,39 +245,6 @@ function wireShellEvents() {
   });
 }
 
-/** Hides the workspace and renders the sign-in gate. */
-function showGate(message = '') {
-  const shell = $('#app-shell');
-  const gate = $('#auth-gate');
-  if (shell) shell.dataset.auth = 'signed-out';
-  if (gate) {
-    gate.hidden = false;
-    renderGate(gate, { message });
-  }
-  document.body.dataset.booted = 'true';
-}
-
-/** Reveals the workspace and starts routing for a signed-in user. */
-function startApp(user) {
-  const shell = $('#app-shell');
-  const gate = $('#auth-gate');
-  if (shell) shell.dataset.auth = 'signed-in';
-  if (gate) gate.hidden = true;
-
-  applyUserToChrome(user);
-
-  startRouter($('#page-root'), (view) => {
-    syncTopbar(view);
-    syncSearchWithRoute();
-    document.body.dataset.booted = 'true';
-  });
-
-  refreshStatus();
-
-  // Keep the service indicator honest without hammering the API.
-  setInterval(refreshStatus, 120000);
-}
-
 /** Strips `?auth_error=...` so a reload does not replay the message. */
 function clearOauthErrorParam() {
   const url = new URL(window.location.href);
@@ -246,18 +254,33 @@ function clearOauthErrorParam() {
   history.replaceState(null, '', `${url.pathname}${search ? `?${search}` : ''}${url.hash}`);
 }
 
+/** Applies a remembered destination after a successful sign-in. */
+function resumeIntendedDestination() {
+  const destination = consumePendingDestination();
+  if (!destination) return;
+  const target = destinationHash(destination);
+  if (window.location.hash === target) return;
+  // replaceState keeps this silent; the router renders the resulting hash.
+  history.replaceState(null, '', target);
+}
+
+function onView(view) {
+  syncTopbar(view);
+  syncSearchWithRoute();
+  document.body.dataset.booted = 'true';
+}
+
 async function boot() {
   hydrateShell();
   applySidebarState();
   syncThemeButton();
   wireShellEvents();
   wireGlobalSearch();
+  wireAuthActions();
   mountUserMenu();
 
-  // A session that lapses mid-use returns the user to the gate.
-  window.addEventListener('aqg:unauthorized', () => {
-    showGate('Your session has expired. Please sign in again.');
-  });
+  // A session that lapses mid-use returns the user to the public dashboard.
+  window.addEventListener('aqg:unauthorized', handleUnauthorized);
 
   const params = new URLSearchParams(window.location.search);
   const oauthError = params.get('auth_error');
@@ -266,18 +289,32 @@ async function boot() {
   try {
     state = await loadAuth();
   } catch (error) {
-    // The server could not be reached; the gate doubles as a status screen.
-    showGate('We could not reach the server. Check your connection and try again.');
-    if (!document.body.dataset.booted) toastError(error.message);
+    // The server could not be reached. The public dashboard still renders and
+    // the modal doubles as a connection notice.
+    applyAuthChrome(null);
+    startRouter($('#page-root'), onView);
+    openAuthModal({ message: 'We could not reach the server. Check your connection and try again.' });
+    toastError(error.message);
     return;
   }
 
   clearOauthErrorParam();
 
-  if (state.user) {
-    startApp(state.user);
-  } else {
-    showGate(oauthErrorMessage(oauthError));
+  const user = state.user;
+  applyAuthChrome(user);
+
+  if (user) {
+    resumeIntendedDestination();
+  }
+
+  startRouter($('#page-root'), onView);
+  refreshStatus();
+
+  // Keep the service indicator honest without hammering the API.
+  setInterval(refreshStatus, 120000);
+
+  if (!user && oauthError) {
+    openAuthModal({ message: oauthErrorMessage(oauthError) });
   }
 }
 

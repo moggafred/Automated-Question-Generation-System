@@ -31,9 +31,10 @@ Study materials reuse the same retrieval stage through
 - **Analytics** — averages, bands, topic-level performance and score distribution,
   aggregated from stored attempts. With no history every metric is `0` and
   `has_data` is `false`, so the UI shows an empty state instead of invented numbers.
-- **Frontend** — dashboard, generator, quiz runner, review, study library, history,
-  attempts, performance, documents, settings and help. Light/dark themes, mobile
-  drawer, keyboard-navigable, no CDN dependencies.
+- **Frontend** — a public dashboard (landing), dashboard, generator, quiz runner,
+  review, study library, history, attempts, performance, documents, settings and
+  help. Light/dark themes, mobile drawer, keyboard-navigable, no CDN dependencies.
+  Visitors browse and sign in only when a feature needs an account.
 
 ## Answer key secrecy
 
@@ -61,6 +62,30 @@ on its own. Two methods are supported:
   `authlib` dependency). Users are matched to existing accounts by verified
   email, then linked. Enable by setting `GOOGLE_CLIENT_ID` and
   `GOOGLE_CLIENT_SECRET`; leave blank to hide the Google button.
+
+### Public dashboard and lazy sign-in
+
+The site opens on a **public dashboard** (`#/home`) that anyone can read without an
+account, together with `#/help`. The shell renders immediately — there is no
+full-screen sign-in gate — and the workspace navigation is revealed only after a
+session resolves. When a visitor requests a protected feature, the router guard:
+
+1. remembers the destination in `sessionStorage` (`aqg.returnTo`, 20-minute TTL),
+2. rewrites the URL to `#/home` without a reload,
+3. renders the public dashboard, and
+4. opens the sign-in modal.
+
+The intended destination also travels through the OAuth round trip: the client
+sends it as `next` to `/api/auth/google/start`, the server stores it in the
+`oauth_states` row (`return_to` column) and the callback redirects back to it.
+Only same-origin SPA paths pass `_safe_return_to` (`/#/…`, `/`, `/index.html`) —
+absolute and protocol-relative URLs are rejected, closing the open-redirect hole.
+Failed sign-ins return to `/` with `?auth_error=google_failed|google_cancelled|google_invalid`,
+which the shell surfaces in the modal. A `401` from any non-auth endpoint makes the
+client re-open the modal on the public dashboard instead of leaving a dead page.
+
+Signed-in visitors land on `#/dashboard`; the public dashboard is always reachable
+from the sidebar so they can return to it.
 
 ### Sessions and cookies
 
@@ -134,8 +159,8 @@ additionally require the CSRF header described below.
 | `POST` | `/api/auth/logout`                | End the current session                                    |
 | `POST` | `/api/auth/logout-all`            | End every other session for the account                    |
 | `PATCH`| `/api/auth/profile`               | Update display name / picture                              |
-| `GET`  | `/api/auth/google/start`          | Begin Google OAuth; returns the authorization URL          |
-| `GET`  | `/api/auth/google/callback`       | OAuth redirect target; sets cookies, returns to the SPA    |
+| `GET`  | `/api/auth/google/start`          | Begin Google OAuth; accepts `next` (same-origin path to resume) |
+| `GET`  | `/api/auth/google/callback`       | OAuth redirect target; sets cookies, returns to `return_to` |
 | `POST` | `/api/generate-quiz`              | Generate an assessment from an upload                     |
 | `POST` | `/api/v1/generate`                | Legacy alias of the above                                 |
 | `GET`  | `/api/quiz/{quiz_id}`             | Learner-safe assessment payload                           |

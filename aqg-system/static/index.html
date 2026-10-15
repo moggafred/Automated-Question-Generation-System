@@ -30,11 +30,11 @@
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
 
-  <div class="auth-gate" id="auth-gate" hidden></div>
+  <div class="auth-modal" id="auth-modal" hidden></div>
 
-  <div class="app-shell" id="app-shell" data-auth="pending">
+  <div class="app-shell" id="app-shell" data-auth="pending" data-sidebar="expanded">
     <aside class="sidebar" id="sidebar" aria-label="Main navigation">
-      <a class="sidebar__brand" href="#/dashboard" aria-label="AQG home">
+      <a class="sidebar__brand" href="#/home" aria-label="AQG home">
         <span class="sidebar__logo" id="brand-logo" aria-hidden="true">AQ</span>
         <span class="sidebar__wordmark">
           <span class="sidebar__name" data-app-name>AQG</span>
@@ -42,49 +42,82 @@
         </span>
       </a>
 
-      <div class="sidebar__section">
-        <p class="sidebar__section-label">Workspace</p>
-        <nav class="sidebar__nav" id="primary-nav">
-          <a class="nav-link" href="#/dashboard" data-nav="dashboard" data-icon="dashboard">
-            <span class="nav-link__icon" data-icon-slot></span><span>Dashboard</span>
-          </a>
-          <a class="nav-link" href="#/generate" data-nav="generate" data-icon="generate">
-            <span class="nav-link__icon" data-icon-slot></span><span>Generate</span>
-          </a>
-          <a class="nav-link" href="#/study" data-nav="study" data-icon="study">
-            <span class="nav-link__icon" data-icon-slot></span><span>Study Materials</span>
-          </a>
-          <a class="nav-link" href="#/history" data-nav="history" data-icon="history">
-            <span class="nav-link__icon" data-icon-slot></span><span>History</span>
-          </a>
-          <a class="nav-link" href="#/assessments" data-nav="assessments" data-icon="assessment">
-            <span class="nav-link__icon" data-icon-slot></span><span>Assessments</span>
-          </a>
-          <a class="nav-link" href="#/performance" data-nav="performance" data-icon="performance">
-            <span class="nav-link__icon" data-icon-slot></span><span>Performance</span>
-          </a>
-        </nav>
+      <div class="sidebar__nav-scroll">
+        <div class="sidebar__section" data-visibility="public">
+          <p class="sidebar__section-label">Explore</p>
+          <nav class="sidebar__nav" id="public-nav">
+            <a class="nav-link" href="#/home" data-nav="home" data-icon="dashboard">
+              <span class="nav-link__icon" data-icon-slot></span><span>Home</span>
+            </a>
+            <a class="nav-link" href="#/home?section=features" data-nav="features" data-icon="layers">
+              <span class="nav-link__icon" data-icon-slot></span><span>Features</span>
+            </a>
+            <a class="nav-link" href="#/home?section=how" data-nav="how" data-icon="help">
+              <span class="nav-link__icon" data-icon-slot></span><span>How It Works</span>
+            </a>
+            <a class="nav-link" href="#/home?section=about" data-nav="about" data-icon="info">
+              <span class="nav-link__icon" data-icon-slot></span><span>About AQG</span>
+            </a>
+          </nav>
+        </div>
+
+        <div class="sidebar__section" data-visibility="auth">
+          <p class="sidebar__section-label">Workspace</p>
+          <nav class="sidebar__nav" id="primary-nav">
+            <a class="nav-link" href="#/dashboard" data-nav="dashboard" data-icon="dashboard">
+              <span class="nav-link__icon" data-icon-slot></span><span>Dashboard</span>
+            </a>
+            <a class="nav-link" href="#/generate" data-nav="generate" data-icon="generate">
+              <span class="nav-link__icon" data-icon-slot></span><span>Generate</span>
+            </a>
+            <a class="nav-link" href="#/study" data-nav="study" data-icon="study">
+              <span class="nav-link__icon" data-icon-slot></span><span>Study Materials</span>
+            </a>
+            <a class="nav-link" href="#/history" data-nav="history" data-icon="history">
+              <span class="nav-link__icon" data-icon-slot></span><span>History</span>
+            </a>
+            <a class="nav-link" href="#/assessments" data-nav="assessments" data-icon="assessment">
+              <span class="nav-link__icon" data-icon-slot></span><span>Assessments</span>
+            </a>
+            <a class="nav-link" href="#/performance" data-nav="performance" data-icon="performance">
+              <span class="nav-link__icon" data-icon-slot></span><span>Performance</span>
+            </a>
+          </nav>
+        </div>
+
+        <div class="sidebar__section" data-visibility="auth">
+          <p class="sidebar__section-label">Library</p>
+          <nav class="sidebar__nav" id="secondary-nav">
+            <a class="nav-link" href="#/documents" data-nav="documents" data-icon="file">
+              <span class="nav-link__icon" data-icon-slot></span><span>Documents</span>
+            </a>
+          </nav>
+        </div>
+
+        <div class="sidebar__section">
+          <p class="sidebar__section-label">Account</p>
+          <nav class="sidebar__nav" id="tertiary-nav">
+            <a class="nav-link" data-visibility="auth" href="#/settings" data-nav="settings" data-icon="settings">
+              <span class="nav-link__icon" data-icon-slot></span><span>Settings</span>
+            </a>
+            <a class="nav-link" href="#/help" data-nav="help" data-icon="help">
+              <span class="nav-link__icon" data-icon-slot></span><span>Help &amp; Guide</span>
+            </a>
+          </nav>
+        </div>
       </div>
 
-      <div class="sidebar__section">
-        <p class="sidebar__section-label">Library</p>
-        <nav class="sidebar__nav" id="secondary-nav">
-          <a class="nav-link" href="#/documents" data-nav="documents" data-icon="file">
-            <span class="nav-link__icon" data-icon-slot></span><span>Documents</span>
-          </a>
-        </nav>
-      </div>
-
-      <div class="sidebar__section">
-        <p class="sidebar__section-label">Account</p>
-        <nav class="sidebar__nav" id="tertiary-nav">
-          <a class="nav-link" href="#/settings" data-nav="settings" data-icon="settings">
-            <span class="nav-link__icon" data-icon-slot></span><span>Settings</span>
-          </a>
-          <a class="nav-link" href="#/help" data-nav="help" data-icon="help">
-            <span class="nav-link__icon" data-icon-slot></span><span>Help &amp; Guide</span>
-          </a>
-        </nav>
+      <div class="sidebar__cta" data-visibility="public">
+        <p class="sidebar__cta-title">Ready to start?</p>
+        <p class="sidebar__cta-text">
+          Sign in to upload your documents and generate assessments, flashcards and study packs.
+        </p>
+        <button type="button" class="btn btn--primary btn--block btn--sm" data-action="get-started">
+          Get Started
+        </button>
+        <button type="button" class="btn btn--ghost btn--block btn--sm" data-action="sign-in">
+          Sign In
+        </button>
       </div>
 
       <div class="sidebar__footer">
@@ -108,7 +141,7 @@
         <p class="topbar__breadcrumb" id="page-breadcrumb">Overview</p>
       </div>
 
-      <div class="topbar__search">
+      <div class="topbar__search" data-visibility="auth">
         <span class="topbar__search-icon" data-icon-slot="search" aria-hidden="true"></span>
         <label class="visually-hidden" for="global-search">Search your history</label>
         <input
@@ -124,11 +157,16 @@
         <button type="button" class="icon-button" id="theme-toggle" aria-label="Switch to dark theme">
           <span data-icon-slot="moon" aria-hidden="true"></span>
         </button>
-        <a class="icon-button" href="#/help" aria-label="Open help and guide">
+        <a class="icon-button" data-visibility="auth" href="#/help" aria-label="Open help and guide">
           <span data-icon-slot="help" aria-hidden="true"></span>
         </a>
 
-        <div class="user-menu" id="user-menu">
+        <div class="topbar__auth-actions" data-visibility="public">
+          <button type="button" class="btn btn--ghost btn--sm" data-action="sign-in">Sign In</button>
+          <button type="button" class="btn btn--primary btn--sm" data-action="get-started">Get Started</button>
+        </div>
+
+        <div class="user-menu" id="user-menu" data-visibility="auth">
           <button
             type="button"
             class="user-menu__toggle"
@@ -163,19 +201,28 @@
     </main>
 
     <nav class="mobile-nav" id="mobile-nav" aria-label="Primary">
-      <a class="mobile-nav__link" href="#/dashboard" data-nav="dashboard" data-icon="dashboard">
+      <a class="mobile-nav__link" data-visibility="public" href="#/home" data-nav="home" data-icon="dashboard">
+        <span data-icon-slot aria-hidden="true"></span><span>Home</span>
+      </a>
+      <a class="mobile-nav__link" data-visibility="public" href="#/home?section=features" data-nav="features" data-icon="layers">
+        <span data-icon-slot aria-hidden="true"></span><span>Features</span>
+      </a>
+      <a class="mobile-nav__link" data-visibility="public" href="#/home?section=about" data-nav="about" data-icon="info">
+        <span data-icon-slot aria-hidden="true"></span><span>About</span>
+      </a>
+      <a class="mobile-nav__link" data-visibility="auth" href="#/dashboard" data-nav="dashboard" data-icon="dashboard">
         <span data-icon-slot aria-hidden="true"></span><span>Dashboard</span>
       </a>
-      <a class="mobile-nav__link" href="#/generate" data-nav="generate" data-icon="generate">
+      <a class="mobile-nav__link" data-visibility="auth" href="#/generate" data-nav="generate" data-icon="generate">
         <span data-icon-slot aria-hidden="true"></span><span>Generate</span>
       </a>
-      <a class="mobile-nav__link" href="#/study" data-nav="study" data-icon="study">
+      <a class="mobile-nav__link" data-visibility="auth" href="#/study" data-nav="study" data-icon="study">
         <span data-icon-slot aria-hidden="true"></span><span>Study</span>
       </a>
-      <a class="mobile-nav__link" href="#/history" data-nav="history" data-icon="history">
+      <a class="mobile-nav__link" data-visibility="auth" href="#/history" data-nav="history" data-icon="history">
         <span data-icon-slot aria-hidden="true"></span><span>History</span>
       </a>
-      <a class="mobile-nav__link" href="#/performance" data-nav="performance" data-icon="performance">
+      <a class="mobile-nav__link" data-visibility="auth" href="#/performance" data-nav="performance" data-icon="performance">
         <span data-icon-slot aria-hidden="true"></span><span>Progress</span>
       </a>
     </nav>

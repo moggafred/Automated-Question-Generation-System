@@ -178,8 +178,8 @@ export function updateProfile(payload, options) {
   return request(`${BASE}/auth/profile`, { method: 'PATCH', body: payload, ...options });
 }
 
-export function startGoogleSignIn(options) {
-  return request(`${BASE}/auth/google/start`, options);
+export function startGoogleSignIn(next = '', options) {
+  return request(`${BASE}/auth/google/start${query({ next })}`, options);
 }
 
 // -- System --------------------------------------------------------------

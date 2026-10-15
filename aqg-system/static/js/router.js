@@ -4,7 +4,14 @@
  * Routes look like `#/generate`, `#/quiz/<id>` or `#/history?search=photosynthesis`.
  * Each page module is dynamically imported on first navigation, then cached, so
  * the initial load only downloads what the dashboard needs.
+ *
+ * Routes flagged `public: true` render for everyone. Every other route is
+ * protected: an unauthenticated visitor is returned to the public dashboard and
+ * the sign-in modal opens, remembering the intended destination so the feature
+ * resumes right after sign-in.
  */
+
+import { isAuthenticated, openAuthModal, setPendingDestination } from './auth.js';
 
 /**
  * @typedef {object} PageView
@@ -16,6 +23,14 @@
  */
 
 const ROUTES = [
+  {
+    path: '/home',
+    nav: 'home',
+    title: 'AQG',
+    breadcrumb: 'AI-powered assessment & study',
+    public: true,
+    load: () => import('./pages/home.js'),
+  },
   {
     path: '/dashboard',
     nav: 'dashboard',
@@ -98,11 +113,12 @@ const ROUTES = [
     nav: 'help',
     title: 'Help & Guide',
     breadcrumb: 'How the platform works',
+    public: true,
     load: () => import('./pages/help.js'),
   },
 ];
 
-const DEFAULT_ROUTE = '/dashboard';
+const DEFAULT_ROUTE = '/home';
 const moduleCache = new Map();
 
 let current = null;
@@ -185,6 +201,13 @@ export async function resolve(hash = window.location.hash) {
   }
 
   const { route, params } = matched;
+
+  // Protected route requested by an anonymous visitor: send them to the public
+  // dashboard, open the sign-in modal and remember where they wanted to go.
+  if (!route.public && !isAuthenticated()) {
+    return await guardProtectedRoute(path, query);
+  }
+
   const { render } = await loadPage(route);
 
   /** @type {PageView} */
@@ -193,6 +216,31 @@ export async function resolve(hash = window.location.hash) {
     title: view.title || route.title,
     breadcrumb: view.breadcrumb || route.breadcrumb,
     nav: route.nav,
+    content: view.content,
+    mount: view.mount,
+    cleanup: view.cleanup,
+  };
+}
+
+/** Redirects to the public dashboard and opens the sign-in modal. */
+async function guardProtectedRoute(path, query) {
+  const search = new URLSearchParams(query || {}).toString();
+  setPendingDestination(`${path}${search ? `?${search}` : ''}`);
+
+  // Rewrite the URL without firing another hashchange, then render the public
+  // dashboard in place of the protected page.
+  history.replaceState(null, '', buildHash('/home'));
+
+  const home = ROUTES.find((item) => item.path === '/home');
+  const { render } = await loadPage(home);
+  const view = await render({ params: {}, query: {}, path: '/home' });
+
+  openAuthModal({ message: 'Sign in to continue to this feature.' });
+
+  return {
+    title: view.title || home.title,
+    breadcrumb: view.breadcrumb || home.breadcrumb,
+    nav: home.nav,
     content: view.content,
     mount: view.mount,
     cleanup: view.cleanup,
@@ -252,7 +300,9 @@ export function start(pageContainer, listener) {
   onNavigate = listener || (() => {});
 
   if (!window.location.hash) {
-    window.location.replace(buildHash(DEFAULT_ROUTE));
+    // Signed-in users land on their personalized dashboard; visitors land on
+    // the public dashboard and can explore before signing in.
+    window.location.replace(buildHash(isAuthenticated() ? '/dashboard' : DEFAULT_ROUTE));
   }
 
   const handle = async () => {
@@ -272,4 +322,13 @@ export function start(pageContainer, listener) {
 /** Navigates to a path, adding to history instead of replacing it. */
 export function navigate(path, query = {}) {
   window.location.hash = buildHash(path, query).slice(1);
+}
+
+/** True when the given hash path is reachable without signing in. */
+export function isPublicHash(hash = window.location.hash) {
+  const { segments } = parseHash(hash);
+  if (!segments.length) return true;
+  const matched = matchRoute(segments);
+  if (!matched) return true; // Unknown routes render the public not-found view.
+  return Boolean(matched.route.public);
 }

@@ -51,7 +51,7 @@ const DIFFICULTY_HINTS = {
   hard: 'Analysis, application and evaluation.',
 };
 
-export default async function render() {
+export default async function render({ query = {} } = {}) {
   // Prefer server-reported limits; fall back to the local defaults on failure.
   const limits = await getLimits().then((payload) => ({
     ...getStoredLimits(),
@@ -66,6 +66,11 @@ export default async function render() {
   const prefs = getGeneratePrefs();
   const questionTypes = getQuestionTypes();
   const difficulties = getDifficultyLevels();
+
+  // Deep links from the public dashboard (e.g. #/generate?type=case-study)
+  // preselect the requested format without persisting it as the default.
+  const requestedType = questionTypes.some((type) => type.value === query.type) ? query.type : '';
+  if (requestedType) prefs.type = requestedType;
 
   const content = `
     <div class="page__header page__header--row">

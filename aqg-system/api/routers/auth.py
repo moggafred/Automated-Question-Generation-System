@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from api.security import clear_auth_cookies, get_current_user, set_auth_cookies
@@ -22,6 +22,33 @@ logger = logging.getLogger("aqg.api.auth")
 
 router = APIRouter(prefix="/api/auth", tags=["authentication"])
 
+#: Upper bound for a client-supplied post-sign-in destination.
+_MAX_RETURN_TO_LENGTH = 2048
+
+
+def _safe_return_to(raw: str | None) -> str:
+    """Validates a post-sign-in destination so it can never leave this origin.
+
+    Only same-origin, hash-based SPA paths are accepted (for example ``/#/generate``
+    or ``/``). Absolute URLs, protocol-relative URLs (``//evil.example``) and values
+    carrying control characters are rejected, which closes the open-redirect hole
+    while still letting the user resume the feature they were trying to open.
+    """
+    if not raw:
+        return ""
+    value = raw.strip()
+    if not value or len(value) > _MAX_RETURN_TO_LENGTH:
+        return ""
+    if not value.startswith("/") or value[1:2] in ("/", "\\"):
+        return ""
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        return ""
+    # The path component (before any query or fragment) must be the SPA shell.
+    path = value.split("#", 1)[0].split("?", 1)[0]
+    if path not in ("/", "/index.html"):
+        return ""
+    return value
+
 
 def _resolve_redirect_uri(request: Request) -> str:
     """Returns the OAuth redirect URI, from settings or derived from the request."""
@@ -31,10 +58,19 @@ def _resolve_redirect_uri(request: Request) -> str:
     return str(request.url_for("google_callback"))
 
 
-def _frontend_redirect(path: str = "/") -> str:
-    """Builds an absolute URL back to the SPA (or a same-origin path)."""
+def _frontend_redirect(path: str = "/", *, error: str = "") -> str:
+    """Builds an absolute URL back to the SPA (or a same-origin path).
+
+    ``error`` is inserted as a query parameter *before* the hash fragment so the
+    single-page shell can surface it while still landing on ``path``.
+    """
     base = settings.FRONTEND_URL.strip().rstrip("/")
-    return f"{base}{path}" if base else path
+    target = path if path.startswith("/") else f"/{path}"
+    if error:
+        head, _, fragment = target.partition("#")
+        separator = "&" if "?" in head else "?"
+        target = f"{head}{separator}auth_error={error}" + (f"#{fragment}" if fragment else "")
+    return f"{base}{target}" if base else target
 
 
 @router.get("/providers", summary="Which sign-in methods are available")
@@ -142,7 +178,10 @@ async def update_profile(
 
 
 @router.get("/google/start", summary="Begin the Google sign-in redirect")
-async def google_start(request: Request) -> dict:
+async def google_start(
+    request: Request,
+    next: str = Query("", description="Validated same-origin path to resume after sign-in."),
+) -> dict:
     if not settings.google_oauth_enabled:
         raise AuthConfigError("Google sign-in is not configured on this deployment.")
 
@@ -156,6 +195,7 @@ async def google_start(request: Request) -> dict:
         code_verifier=verifier,
         redirect_uri=redirect_uri,
         expires_at=auth.oauth_state_expiry_iso(),
+        return_to=_safe_return_to(next),
     )
 
     authorization_url = auth.build_authorization_url(
@@ -173,12 +213,12 @@ async def google_callback(request: Request) -> RedirectResponse:
     error = request.query_params.get("error")
     if error:
         logger.info("Google sign-in cancelled: %s", error)
-        return RedirectResponse(_frontend_redirect("/?auth_error=google_cancelled"))
+        return RedirectResponse(_frontend_redirect("/", error="google_cancelled"))
 
     code = request.query_params.get("code")
     state = request.query_params.get("state")
     if not code or not state:
-        return RedirectResponse(_frontend_redirect("/?auth_error=google_invalid"))
+        return RedirectResponse(_frontend_redirect("/", error="google_invalid"))
 
     try:
         if not settings.google_oauth_enabled:
@@ -202,12 +242,14 @@ async def google_callback(request: Request) -> RedirectResponse:
         user, is_new = await auth.upsert_google_user(userinfo)
     except (AuthProviderError, AuthConfigError) as exc:
         logger.warning("Google sign-in failed: %s (detail=%s)", exc.message, exc.detail)
-        return RedirectResponse(_frontend_redirect("/?auth_error=google_failed"))
+        return RedirectResponse(_frontend_redirect("/", error="google_failed"))
 
     session = await auth.create_session_for_user(user["user_id"])
     logger.info("Google sign-in %s: %s", "created" if is_new else "linked", user["user_id"])
 
-    response = RedirectResponse(_frontend_redirect("/"))
+    # Send the browser back to the feature the visitor was trying to reach.
+    return_to = _safe_return_to(record.get("return_to"))
+    response = RedirectResponse(_frontend_redirect(return_to or "/"))
     set_auth_cookies(response, session["token"], session["csrf_token"])
     return response
 
