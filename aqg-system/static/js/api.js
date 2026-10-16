@@ -64,7 +64,7 @@ export class NetworkError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body, form, signal } = {}) {
+async function request(${BASE}path, { method = 'GET', body, form, signal } = {}) {
   // Credentials must travel with every call so the session cookie is sent,
   // including when the SPA is served from a different origin than the API.
   const init = { method, signal, credentials: 'include', headers: { Accept: 'application/json' } };
@@ -151,55 +151,55 @@ function query(params = {}) {
 // -- Authentication ------------------------------------------------------
 
 export function getAuthProviders(options) {
-  return request(`${BASE}/auth/providers`, options);
+  return request(${BASE}`${BASE}/auth/providers`, options);
 }
 
 export function getCurrentUser(options) {
-  return request(`${BASE}/auth/me`, options);
+  return request(${BASE}`${BASE}/auth/me`, options);
 }
 
 export function registerAccount(payload, options) {
-  return request(`${BASE}/auth/register`, { method: 'POST', body: payload, ...options });
+  return request(${BASE}`${BASE}/auth/register`, { method: 'POST', body: payload, ...options });
 }
 
 export function loginWithPassword(payload, options) {
-  return request(`${BASE}/auth/login`, { method: 'POST', body: payload, ...options });
+  return request(${BASE}`${BASE}/auth/login`, { method: 'POST', body: payload, ...options });
 }
 
 export function logout(options) {
-  return request(`${BASE}/auth/logout`, { method: 'POST', ...options });
+  return request(${BASE}`${BASE}/auth/logout`, { method: 'POST', ...options });
 }
 
 export function logoutEverywhere(options) {
-  return request(`${BASE}/auth/logout-all`, { method: 'POST', ...options });
+  return request(${BASE}`${BASE}/auth/logout-all`, { method: 'POST', ...options });
 }
 
 export function updateProfile(payload, options) {
-  return request(`${BASE}/auth/profile`, { method: 'PATCH', body: payload, ...options });
+  return request(${BASE}`${BASE}/auth/profile`, { method: 'PATCH', body: payload, ...options });
 }
 
 export function startGoogleSignIn(next = '', options) {
-  return request(`${BASE}/auth/google/start${query({ next })}`, options);
+  return request(${BASE}`${BASE}/auth/google/start${query({ next })}`, options);
 }
 
 // -- System --------------------------------------------------------------
 
 export function getStatus(options) {
-  return request(`${BASE}/status`, options);
+  return request(${BASE}`${BASE}/status`, options);
 }
 
 export function getDashboard(options) {
-  return request(`${BASE}/dashboard`, options);
+  return request(${BASE}`${BASE}/dashboard`, options);
 }
 
 export function getLimits(options) {
-  return request(`${BASE}/limits`, options);
+  return request(${BASE}`${BASE}/limits`, options);
 }
 
 // -- Documents -----------------------------------------------------------
 
 export function listDocuments(params = {}, options) {
-  return request(`${BASE}/documents${query(params)}`, options);
+  return request(${BASE}`${BASE}/documents${query(params)}`, options);
 }
 
 // -- Generation ----------------------------------------------------------
@@ -218,7 +218,7 @@ export function generateQuiz(file, config = {}, options) {
   form.append('difficulty', config.difficulty || 'medium');
   form.append('topic', config.topic || '');
   form.append('instructions', config.instructions || '');
-  return request(`${BASE}/generate-quiz`, { method: 'POST', form, ...options });
+  return request(${BASE}`${BASE}/generate-quiz`, { method: 'POST', form, ...options });
 }
 
 // -- Study materials -----------------------------------------------------
@@ -228,46 +228,46 @@ export function generateStudyMaterial(file, config = {}, options) {
   form.append('file', file, file.name);
   form.append('type', config.type || 'all');
   form.append('topic', config.topic || '');
-  return request(`${BASE}/generate-study-material`, { method: 'POST', form, ...options });
+  return request(${BASE}`${BASE}/generate-study-material`, { method: 'POST', form, ...options });
 }
 
 export function listStudyMaterials(params = {}, options) {
-  return request(`${BASE}/study-materials${query(params)}`, options);
+  return request(${BASE}`${BASE}/study-materials${query(params)}`, options);
 }
 
 export function getStudyMaterial(materialId, options) {
-  return request(`${BASE}/study-materials/${encodeURIComponent(materialId)}`, options);
+  return request(${BASE}`${BASE}/study-materials/${encodeURIComponent(materialId)}`, options);
 }
 
 export function deleteStudyMaterial(materialId, options) {
-  return request(`${BASE}/study-materials/${encodeURIComponent(materialId)}`, {
+  return request(${BASE}`${BASE}/study-materials/${encodeURIComponent(materialId)}`, {
     method: 'DELETE',
     ...options,
   });
 }
 
 export function getStudyTypes(options) {
-  return request(`${BASE}/study-types`, options);
+  return request(${BASE}`${BASE}/study-types`, options);
 }
 
 // -- Quizzes -------------------------------------------------------------
 
 export function getQuiz(quizId, options) {
-  return request(`${BASE}/quiz/${encodeURIComponent(quizId)}`, options);
+  return request(${BASE}`${BASE}/quiz/${encodeURIComponent(quizId)}`, options);
 }
 
 export function listQuizzes(params = {}, options) {
-  return request(`${BASE}/quizzes${query(params)}`, options);
+  return request(${BASE}`${BASE}/quizzes${query(params)}`, options);
 }
 
 export function deleteQuiz(quizId, options) {
-  return request(`${BASE}/v1/quizzes/${encodeURIComponent(quizId)}`, { method: 'DELETE', ...options });
+  return request(${BASE}`${BASE}/v1/quizzes/${encodeURIComponent(quizId)}`, { method: 'DELETE', ...options });
 }
 
 // -- Assessments ---------------------------------------------------------
 
 export function submitAssessment(quizId, submission, options) {
-  return request(`${BASE}/assessment/${encodeURIComponent(quizId)}/submit`, {
+  return request(${BASE}`${BASE}/assessment/${encodeURIComponent(quizId)}/submit`, {
     method: 'POST',
     body: submission,
     ...options,
@@ -275,19 +275,28 @@ export function submitAssessment(quizId, submission, options) {
 }
 
 export function listAttempts(params = {}, options) {
-  return request(`${BASE}/assessment/history${query(params)}`, options);
+  return request(${BASE}`${BASE}/assessment/history${query(params)}`, options);
 }
 
 export function getAttempt(attemptId, options) {
-  return request(`${BASE}/assessment/attempts/${encodeURIComponent(attemptId)}`, options);
+  return request(${BASE}`${BASE}/assessment/attempts/${encodeURIComponent(attemptId)}`, options);
 }
 
 export function getAttemptTypes(options) {
-  return request(`${BASE}/assessment-types`, options);
+  return request(${BASE}`${BASE}/assessment-types`, options);
 }
 
 // -- Performance ---------------------------------------------------------
 
 export function getPerformance(options) {
-  return request(`${BASE}/performance`, options);
+  return request(${BASE}`${BASE}/performance`, options);
 }
+export function googleGuestSignIn(payload, options) {
+  return request(${BASE}${BASE}/auth/google/guest, { method: 'POST', body: payload, ...options });
+}
+
+
+export function googleGuestSignIn(payload, options) {
+  return request(${BASE}/auth/google/guest, { method: 'POST', body: payload, ...options });
+}
+

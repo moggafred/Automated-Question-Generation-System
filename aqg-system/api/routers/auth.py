@@ -270,3 +270,27 @@ def _session_response(user: dict, session: dict) -> JSONResponse:
     response = JSONResponse({"user": principal.to_public_dict()})
     set_auth_cookies(response, session["token"], session["csrf_token"])
     return response
+
+@router.post('/google/guest', summary='Guest sign-in with Google identity')
+async def google_guest(payload: RegisterRequest) -> JSONResponse:
+    email = (payload.email or '').strip().lower()
+    full_name = (payload.full_name or '').strip()
+    if not email:
+        raise ValidationError('Email is required.')
+    if not full_name:
+        full_name = email.split('@')[0].replace('.', ' ').title()
+    existing = await database.async_get_user_by_email(email)
+    if existing:
+        updated = await database.async_update_user_login(existing['user_id'], full_name=full_name)
+        user = updated or existing
+        session = await auth.create_session_for_user(user['user_id'])
+        return _session_response(user, session)
+    created = await database.async_create_user(
+        user_id=auth.new_user_id(),
+        email=email,
+        full_name=full_name,
+        provider='google_guest',
+        provider_subject=None,
+    )
+    session = await auth.create_session_for_user(created['user_id'])
+    return _session_response(created, session)
