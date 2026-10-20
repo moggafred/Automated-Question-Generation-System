@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from api.deps import logger
 from api.security import require_user
 from config.settings import settings
 from models.question import resolve_difficulty
@@ -15,12 +16,14 @@ from services.generation import (
     persist_assessment,
     resolve_question_count,
 )
-from services.generator import QuestionGeneratorService
+from services.generator import get_generator_service
+
+logger = logging.getLogger("aqg.api.generation")
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
 #: Shared generator instance so the LLM client is constructed once per process.
-generator_service = QuestionGeneratorService()
+generator_service = get_generator_service()
 
 
 def _response_payload(assessment, *, quiz_id: str, topic: str, question_type: str, document) -> dict:

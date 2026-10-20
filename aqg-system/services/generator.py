@@ -510,6 +510,17 @@ def default_retrieval_query(topic: str = "") -> str:
     return topic.strip() if topic and topic.strip() else "key concepts and main summaries"
 
 
+_shared_generator: QuestionGeneratorService | None = None
+
+
+def get_generator_service() -> QuestionGeneratorService:
+    """Returns the process-wide generator so the LLM client is built once."""
+    global _shared_generator
+    if _shared_generator is None:
+        _shared_generator = QuestionGeneratorService()
+    return _shared_generator
+
+
 def sanitize_for_context(chunks: Iterable[str], max_chars: int) -> str:
     """Joins retrieved chunks, truncating cleanly at the configured ceiling."""
     joined = "\n\n".join(chunk.strip() for chunk in chunks if chunk and chunk.strip())
@@ -529,5 +540,6 @@ __all__ = [
     "build_quiz_instruction",
     "build_user_prompt",
     "default_retrieval_query",
+    "get_generator_service",
     "sanitize_for_context",
 ]

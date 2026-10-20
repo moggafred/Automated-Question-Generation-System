@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Body, Depends, Path, Query
 
-from api.deps import logger
 from api.security import require_user
 from errors import AssessmentError, DatabaseError, QuizNotFoundError
 from models.assessment import AssessmentSubmission
@@ -23,6 +24,8 @@ from services.database import (
 from models.quiz import Assessment
 
 router = APIRouter(prefix="/api", tags=["assessments"])
+
+logger = logging.getLogger("aqg.api.assessments")
 
 QUIZ_ID_DESCRIPTION = Path(..., min_length=1, description="The UUID4 tracking ID of the assessment.")
 ATTEMPT_ID_DESCRIPTION = Path(..., min_length=1, description="The UUID4 tracking ID of the attempt.")

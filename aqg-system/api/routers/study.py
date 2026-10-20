@@ -17,12 +17,12 @@ from services.database import (
 )
 from services.documents import ingest_document
 from services.generation import resolve_instructions, resolve_topic
-from services.generator import QuestionGeneratorService
+from services.generator import get_generator_service
 from services.study_materials import generate_study_material
 
 router = APIRouter(prefix="/api", tags=["study materials"])
 
-generator_service = QuestionGeneratorService()
+generator_service = get_generator_service()
 
 
 def _to_record(stored: dict) -> dict:

@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 
-from api.deps import logger
 from api.security import get_optional_user, require_user
 from config.settings import settings
 from errors import DatabaseError

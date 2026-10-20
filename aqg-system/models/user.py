@@ -59,10 +59,6 @@ class AuthenticatedUser:
         }
 
 
-class EmailStr(str):
-    """Small helper so the schema reads naturally without an extra dependency."""
-
-
 def normalize_email(value: str) -> str:
     """Lower-cases and trims an email address for stable uniqueness checks."""
     return (value or "").strip().lower()
@@ -73,6 +69,26 @@ class RegisterRequest(BaseModel):
 
     email: str = Field(..., min_length=3, max_length=254)
     password: str = Field(..., min_length=1, max_length=settings.PASSWORD_MAX_LENGTH)
+    full_name: str = Field("", max_length=MAX_NAME_LENGTH)
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        normalized = normalize_email(value)
+        if not _EMAIL_PATTERN.match(normalized):
+            raise ValueError("Please enter a valid email address.")
+        return normalized
+
+    @field_validator("full_name")
+    @classmethod
+    def _clean_name(cls, value: str) -> str:
+        return (value or "").strip()
+
+
+class GuestSignInRequest(BaseModel):
+    """Guest sign-in payload: an email plus optional display name, no password."""
+
+    email: str = Field(..., min_length=3, max_length=254)
     full_name: str = Field("", max_length=MAX_NAME_LENGTH)
 
     @field_validator("email")
@@ -127,6 +143,7 @@ class ProfileUpdateRequest(BaseModel):
 
 __all__ = [
     "AuthenticatedUser",
+    "GuestSignInRequest",
     "LoginRequest",
     "ProfileUpdateRequest",
     "ProviderName",

@@ -11,11 +11,10 @@ from models.quiz import Assessment
 from models.user import AuthenticatedUser
 from services.database import (
     MAX_HISTORY_PAGE_SIZE,
-    async_count_assessment_attempts,
+    async_attempt_stats_by_quiz,
     async_count_quizzes,
     async_delete_quiz,
     async_distinct_topics,
-    async_list_assessment_attempts,
     async_list_quizzes,
 )
 
@@ -111,11 +110,10 @@ async def quiz_history(
     )
     total = await async_count_quizzes(topic=normalized_topic, quiz_type=normalized_type, user_id=user.id)
     topics = await async_distinct_topics(user_id=user.id)
+    attempt_stats = await async_attempt_stats_by_quiz(user_id=user.id)
 
     enriched: list[dict] = []
     for record in records:
-        attempts = await async_count_assessment_attempts(quiz_id=record["quiz_id"], user_id=user.id)
-        recent = await async_list_assessment_attempts(limit=1, quiz_id=record["quiz_id"], user_id=user.id)
         if term:
             haystack = " ".join(
                 str(record.get(key) or "") for key in ("topic", "quiz_title", "source_filename", "quiz_type")
@@ -123,12 +121,13 @@ async def quiz_history(
             if term not in haystack:
                 continue
 
+        stats = attempt_stats.get(record["quiz_id"], {})
         enriched.append(
             {
                 **record,
                 "quiz_type_label": QUESTION_TYPE_LABELS.get(record["quiz_type"], record["quiz_type"]),
-                "attempt_count": attempts,
-                "best_percentage": max((item["percentage"] for item in recent), default=None),
+                "attempt_count": stats.get("attempt_count", 0),
+                "best_percentage": stats.get("best_percentage"),
             }
         )
 

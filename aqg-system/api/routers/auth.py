@@ -15,7 +15,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from api.security import clear_auth_cookies, get_current_user, set_auth_cookies
 from config.settings import settings
 from errors import AuthConfigError, AuthenticationError, AuthProviderError, ValidationError
-from models.user import AuthenticatedUser, LoginRequest, ProfileUpdateRequest, RegisterRequest
+from models.user import (
+    AuthenticatedUser,
+    GuestSignInRequest,
+    LoginRequest,
+    ProfileUpdateRequest,
+    RegisterRequest,
+)
 from services import auth, database
 
 logger = logging.getLogger("aqg.api.auth")
@@ -272,7 +278,7 @@ def _session_response(user: dict, session: dict) -> JSONResponse:
     return response
 
 @router.post('/google/guest', summary='Guest sign-in with Google identity')
-async def google_guest(payload: RegisterRequest) -> JSONResponse:
+async def google_guest(payload: GuestSignInRequest) -> JSONResponse:
     email = (payload.email or '').strip().lower()
     full_name = (payload.full_name or '').strip()
     if not email:

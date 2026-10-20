@@ -926,6 +926,36 @@ def count_assessment_attempts(quiz_id: Optional[str] = None, user_id: Optional[s
     return int(row["total"]) if row else 0
 
 
+def attempt_stats_by_quiz(user_id: Optional[str] = None) -> dict[str, dict[str, Any]]:
+    """Returns per-quiz attempt aggregates in a single grouped query.
+
+    The history browser needs the attempt count and the best score for every
+    quiz on the page; issuing one query per row would be an N+1 pattern.
+    """
+    _ensure_schema()
+    query = f"""
+        SELECT quiz_id,
+               COUNT(*) AS attempt_count,
+               MAX(percentage) AS best_percentage
+        FROM {ATTEMPT_TABLE}
+    """
+    params: list[Any] = []
+    owner = _owner_clause(user_id, params)
+    if owner:
+        query += f" WHERE {owner}"
+    query += " GROUP BY quiz_id"
+
+    with get_connection() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return {
+        row["quiz_id"]: {
+            "attempt_count": int(row["attempt_count"]),
+            "best_percentage": round(float(row["best_percentage"]), 1),
+        }
+        for row in rows
+    }
+
+
 def delete_assessment_attempts(quiz_id: str) -> int:
     _ensure_schema()
     if not quiz_id:
@@ -1691,6 +1721,10 @@ async def async_list_assessment_attempts(
 
 async def async_count_assessment_attempts(quiz_id: Optional[str] = None, user_id: Optional[str] = None) -> int:
     return await _run_in_worker(count_assessment_attempts, quiz_id, user_id)
+
+
+async def async_attempt_stats_by_quiz(user_id: Optional[str] = None) -> dict[str, dict[str, Any]]:
+    return await _run_in_worker(attempt_stats_by_quiz, user_id)
 
 
 async def async_get_platform_statistics(user_id: Optional[str] = None) -> dict[str, Any]:
