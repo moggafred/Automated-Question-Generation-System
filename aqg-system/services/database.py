@@ -47,7 +47,6 @@ STUDY_TABLE = "study_materials"
 ATTEMPT_TABLE = "assessment_attempts"
 USER_TABLE = "users"
 SESSION_TABLE = "sessions"
-OAUTH_STATE_TABLE = "oauth_states"
 
 #: Sessions are opaque: only a SHA-256 digest of the bearer token is stored, so
 #: a database leak cannot be replayed against the running service.
@@ -84,18 +83,6 @@ _SCHEMA_STATEMENTS = (
     """,
     f"CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON {SESSION_TABLE} (user_id)",
     f"CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON {SESSION_TABLE} (expires_at)",
-    # --- Short-lived OAuth handshake state ------------------------------
-    f"""
-    CREATE TABLE IF NOT EXISTS {OAUTH_STATE_TABLE} (
-        state TEXT PRIMARY KEY,
-        code_verifier TEXT NOT NULL,
-        redirect_uri TEXT NOT NULL DEFAULT '',
-        return_to TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL,
-        expires_at TEXT NOT NULL
-    )
-    """,
-    # --- Legacy generated quiz table (preserved verbatim) ---------------
     # --- Legacy generated quiz table (preserved verbatim) ---------------
     f"""
     CREATE TABLE IF NOT EXISTS {QUIZ_TABLE} (
@@ -181,10 +168,6 @@ _MIGRATIONS: tuple[tuple[str, str, str], ...] = (
     (DOCUMENT_TABLE, "user_id", "TEXT"),
     (STUDY_TABLE, "user_id", "TEXT"),
     (ATTEMPT_TABLE, "user_id", "TEXT"),
-    # Post-sign-in destination. Lets the SPA resume the exact feature the visitor
-    # was trying to open before the Google round trip. Always a validated,
-    # same-origin relative path (see ``api.routers.auth._safe_return_to``).
-    (OAUTH_STATE_TABLE, "return_to", "TEXT NOT NULL DEFAULT ''"),
 )
 
 # Indexes that depend on migrated columns are created after the ALTERs run.
@@ -1523,67 +1506,6 @@ def delete_session_by_token_hash_and_user(token_hash: str, user_id: str) -> bool
 
 
 # ==========================================================================
-# oauth_states -- single-use CSRF/PKCE state for the Google redirect flow
-# ==========================================================================
-def create_oauth_state(
-    state: str,
-    code_verifier: str,
-    redirect_uri: str,
-    expires_at: str,
-    return_to: str = "",
-) -> str:
-    if not state or not code_verifier:
-        raise ValueError("state and code_verifier are required.")
-    _ensure_schema()
-    with get_connection() as conn, conn:
-        conn.execute(
-            f"""
-            INSERT INTO {OAUTH_STATE_TABLE} (state, code_verifier, redirect_uri, return_to, expires_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (state, code_verifier, redirect_uri or "", return_to or "", expires_at, _utc_now_iso()),
-        )
-    return state
-
-
-def consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
-    """Atomically fetches then deletes a state row (single-use), validating expiry."""
-    _ensure_schema()
-    if not state:
-        return None
-
-    with get_connection() as conn, conn:
-        row = conn.execute(
-            f"SELECT state, code_verifier, redirect_uri, return_to, expires_at, created_at FROM {OAUTH_STATE_TABLE} WHERE state = ?",
-            (state,),
-        ).fetchone()
-        conn.execute(f"DELETE FROM {OAUTH_STATE_TABLE} WHERE state = ?", (state,))
-
-    if not row:
-        return None
-    if (row["expires_at"] or "") <= _utc_now_iso():
-        return None
-    return {
-        "state": row["state"],
-        "code_verifier": row["code_verifier"],
-        "redirect_uri": row["redirect_uri"],
-        "return_to": row["return_to"] or "",
-        "expires_at": row["expires_at"],
-        "created_at": row["created_at"],
-    }
-
-
-def purge_expired_oauth_states() -> int:
-    _ensure_schema()
-    with get_connection() as conn, conn:
-        cursor = conn.execute(
-            f"DELETE FROM {OAUTH_STATE_TABLE} WHERE expires_at <= ?",
-            (_utc_now_iso(),),
-        )
-        return int(cursor.rowcount or 0)
-
-
-# ==========================================================================
 # Async bridge -- every blocking sqlite3 call is dispatched to a worker thread
 # ==========================================================================
 async def _run_in_worker(func: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -1803,16 +1725,3 @@ async def async_delete_user_sessions(user_id: str, except_token_hash: Optional[s
 
 async def async_purge_expired_sessions() -> int:
     return await _run_in_worker(purge_expired_sessions)
-
-
-# --- OAuth states ----------------------------------------------------------
-async def async_create_oauth_state(*args: Any, **kwargs: Any) -> str:
-    return await _run_in_worker(create_oauth_state, *args, **kwargs)
-
-
-async def async_consume_oauth_state(state: str) -> Optional[dict[str, Any]]:
-    return await _run_in_worker(consume_oauth_state, state)
-
-
-async def async_purge_expired_oauth_states() -> int:
-    return await _run_in_worker(purge_expired_oauth_states)

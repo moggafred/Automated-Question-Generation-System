@@ -14,6 +14,7 @@ schemas in ``models/`` and configuration in ``config/``.
 from __future__ import annotations
 
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path as FilePath
 
@@ -21,6 +22,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
 from api.deps import install_exception_handlers
 from api.router import register_routers
@@ -88,6 +90,16 @@ if settings.cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+# Signed cookie session used by authlib to carry OAuth state across the Google
+# redirect. The application session itself remains the opaque DB-backed cookie.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SESSION_SECRET.strip() or settings.AUTH_SECRET_KEY.strip() or secrets.token_hex(32),
+    https_only=settings.SESSION_COOKIE_SECURE,
+    same_site=settings.SESSION_COOKIE_SAMESITE.lower(),
+)
 
 
 @app.middleware("http")

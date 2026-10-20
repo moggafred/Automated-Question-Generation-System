@@ -49,10 +49,10 @@ class AuthenticatedUser:
     def to_public_dict(self) -> dict[str, Any]:
         """Projects the user without any secret or session material."""
         return {
-            "user_id": self.id,
+            "id": self.id,
+            "name": self.full_name,
             "email": self.email,
-            "full_name": self.full_name,
-            "picture_url": self.picture_url,
+            "avatar_url": self.picture_url,
             "provider": self.provider,
             "created_at": self.created_at,
             "last_login_at": self.last_login_at,

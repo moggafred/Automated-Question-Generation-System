@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     # Signing material for opaque session identifiers. A random value is derived
     # per process when unset (fine for local development, never for production).
     AUTH_SECRET_KEY: str = os.getenv("AUTH_SECRET_KEY", "")
+    # Secret for the signed session cookie used by authlib's OAuth state storage.
+    SESSION_SECRET: str = os.getenv("SESSION_SECRET", "")
     SESSION_COOKIE_NAME: str = os.getenv("SESSION_COOKIE_NAME", "aqg_session")
     CSRF_COOKIE_NAME: str = os.getenv("CSRF_COOKIE_NAME", "aqg_csrf")
     # Seven days by default.

@@ -96,7 +96,7 @@ async function request(path, { method = 'GET', body, form, signal } = {}) {
   if (!response.ok) {
     // A 401 outside the auth endpoints means the session expired: let the shell
     // tear down protected UI. Auth calls handle their own 401s inline.
-    if (response.status === 401 && !path.startsWith(`${BASE}/auth/`)) {
+    if (response.status === 401 && !path.startsWith('/auth/')) {
       signalUnauthenticated();
     }
     throw new ApiError(errorMessage(payload, response.status), {
@@ -151,35 +151,36 @@ function query(params = {}) {
 // -- Authentication ------------------------------------------------------
 
 export function getAuthProviders(options) {
-  return request(`${BASE}/auth/providers`, options);
+  return request('/auth/providers', options);
 }
 
 export function getCurrentUser(options) {
-  return request(`${BASE}/auth/me`, options);
+  return request('/auth/me', options);
 }
 
 export function registerAccount(payload, options) {
-  return request(`${BASE}/auth/register`, { method: 'POST', body: payload, ...options });
+  return request('/auth/signup', { method: 'POST', body: payload, ...options });
 }
 
 export function loginWithPassword(payload, options) {
-  return request(`${BASE}/auth/login`, { method: 'POST', body: payload, ...options });
+  return request('/auth/login', { method: 'POST', body: payload, ...options });
 }
 
 export function logout(options) {
-  return request(`${BASE}/auth/logout`, { method: 'POST', ...options });
+  return request('/auth/logout', { method: 'POST', ...options });
 }
 
 export function logoutEverywhere(options) {
-  return request(`${BASE}/auth/logout-all`, { method: 'POST', ...options });
+  return request('/auth/logout-all', { method: 'POST', ...options });
 }
 
 export function updateProfile(payload, options) {
-  return request(`${BASE}/auth/profile`, { method: 'PATCH', body: payload, ...options });
+  return request('/auth/profile', { method: 'PATCH', body: payload, ...options });
 }
 
-export function startGoogleSignIn(next = '', options) {
-  return request(`${BASE}/auth/google/start${query({ next })}`, options);
+/** Full URL of the Google sign-in redirect; navigate the browser here. */
+export function googleSignInUrl() {
+  return '/auth/google';
 }
 
 // -- System --------------------------------------------------------------

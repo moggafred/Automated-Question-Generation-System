@@ -34,8 +34,8 @@ export default async function render() {
   const user = getActiveUser();
   const accountName = user ? displayName(user) : 'Your account';
   const accountEmail = user?.email || '';
-  const accountAvatar = user?.picture_url
-    ? `<img src="${escapeHtml(user.picture_url)}" alt="" referrerpolicy="no-referrer" />`
+  const accountAvatar = user?.avatar_url
+    ? `<img src="${escapeHtml(user.avatar_url)}" alt="" referrerpolicy="no-referrer" />`
     : escapeHtml(user ? initials(user) : '?');
   const accountProvider = user?.provider === 'google' ? 'Google' : 'Email';
 

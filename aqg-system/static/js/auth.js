@@ -16,11 +16,11 @@ import {
   ApiError,
   getAuthProviders,
   getCurrentUser as fetchCurrentUser,
+  googleSignInUrl,
   loginWithPassword,
   logout as requestLogout,
   logoutEverywhere as requestLogoutEverywhere,
   registerAccount,
-  startGoogleSignIn,
 } from './api.js';
 import { $, escapeHtml, hydrateIcons } from './dom.js';
 import { icon } from './icons.js';
@@ -36,7 +36,8 @@ const RETURN_TO_MAX_AGE_MS = 20 * 60 * 1000;
 const OAUTH_ERROR_MESSAGES = {
   google_failed: 'Google sign-in could not be completed. Please try again.',
   google_cancelled: 'Google sign-in was cancelled.',
-  google_invalid: 'That sign-in link was invalid or has expired.',
+  google_unverified: 'Google could not verify that account. Please try again.',
+  google_conflict: 'An account already uses this email. Sign in with your existing method first.',
 };
 
 /** Friendly labels so the modal can name the feature the visitor asked for. */
@@ -90,7 +91,7 @@ export async function loadAuth() {
     };
   }
 
-  currentUser = userPayload?.user ?? null;
+  currentUser = userPayload || null;
   return { providers: getProviders(), user: currentUser };
 }
 
@@ -99,7 +100,7 @@ export async function loadAuth() {
 /** A friendly label for a user: full name, else the email local part. */
 export function displayName(user = currentUser) {
   if (!user) return 'Account';
-  const name = String(user.full_name || '').trim();
+  const name = String(user.name || '').trim();
   if (name) return name;
   const email = String(user.email || '');
   return email.split('@')[0] || 'Account';
@@ -177,12 +178,6 @@ export function clearPendingDestination() {
   } catch {
     /* Nothing to clear. */
   }
-}
-
-/** Builds the validated `next` parameter the backend expects for Google OAuth. */
-function toNextParam(path) {
-  const clean = normalisePath(path);
-  return clean ? `/#${clean}` : '';
 }
 
 /** Human-readable name of the pending destination, for the modal copy. */
@@ -424,8 +419,8 @@ function wireModal(modal) {
       }
 
       if (mode === 'register') {
-        if (password.length < 8) {
-          showError('Choose a password with at least 8 characters.');
+        if (password.length < 12) {
+          showError('Choose a password with at least 12 characters.');
           return;
         }
         if (password !== form.confirm.value) {
@@ -437,7 +432,7 @@ function wireModal(modal) {
       setBusy(submit, true);
       try {
         if (mode === 'register') {
-          await registerAccount({ email, password, full_name: fullName });
+          await registerAccount({ name: fullName, email, password });
         } else {
           await loginWithPassword({ email, password });
         }
@@ -452,16 +447,9 @@ function wireModal(modal) {
 
   const googleButton = modal.querySelector('#auth-google');
   if (googleButton) {
-    googleButton.addEventListener('click', async () => {
-      setBusy(googleButton, true);
-      try {
-        const { authorization_url: url } = await startGoogleSignIn(toNextParam(peekPendingDestination()));
-        if (!url) throw new Error('The provider did not return a sign-in URL.');
-        window.location.assign(url);
-      } catch (error) {
-        showError(safeMessage(error));
-        setBusy(googleButton, false);
-      }
+    googleButton.addEventListener('click', () => {
+      // Full-page redirect to Google; the callback returns to the SPA origin.
+      window.location.assign(googleSignInUrl());
     });
   }
 
@@ -504,7 +492,7 @@ export function applyUserToChrome(user = currentUser) {
   const panel = $('#user-menu-panel');
 
   if (avatar) {
-    const picture = String(user.picture_url || '').trim();
+    const picture = String(user.avatar_url || '').trim();
     if (picture) {
       avatar.innerHTML = `<img src="${escapeHtml(picture)}" alt="" referrerpolicy="no-referrer" />`;
     } else {
@@ -518,8 +506,8 @@ export function applyUserToChrome(user = currentUser) {
     panel.innerHTML = `
       <div class="user-menu__header">
         <span class="avatar avatar--lg">${
-          user.picture_url
-            ? `<img src="${escapeHtml(user.picture_url)}" alt="" referrerpolicy="no-referrer" />`
+          user.avatar_url
+            ? `<img src="${escapeHtml(user.avatar_url)}" alt="" referrerpolicy="no-referrer" />`
             : escapeHtml(initials(user))
         }</span>
         <div class="user-menu__identity">
