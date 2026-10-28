@@ -142,13 +142,14 @@ a real provider key.
 Errors always use the envelope `{"error": "...", "detail": "..."}` with a
 user-safe message; internals stay in the server log.
 
-Every endpoint requires an authenticated session **except** `/health`,
+Every endpoint requires an authenticated session **except** `/health`, `/ready`,
 `/api/status`, `/api/limits` and `/api/auth/providers`. State-changing requests
 additionally require the CSRF header described below.
 
 | Method | Path                              | Notes                                                     |
 |--------|-----------------------------------|-----------------------------------------------------------|
 | `GET`  | `/health`                         | Liveness probe, never touches the database                |
+| `GET`  | `/ready`                          | Readiness probe; returns `503` until dependencies are ready |
 | `GET`  | `/api/status`                     | App identity, service states, aggregate counts            |
 | `GET`  | `/api/dashboard`                  | Statistics, recent activity/attempts, quick actions        |
 | `GET`  | `/api/limits`                     | Upload and generation bounds for the client                |
@@ -275,6 +276,22 @@ FastAPI service from `aqg-system/`.
    proxied same-origin, the session cookie is sent automatically and no CORS
    configuration is needed.
 3. Set `FRONTEND_URL` on Render to the Vercel domain and redeploy the backend.
+
+### Running the FastAPI backend on Vercel
+
+The current data layer is SQLite. Vercel Functions have an ephemeral filesystem,
+so SQLite files there are not durable and may not be writable. A successful
+`/api/status` response alone does not mean production storage or generation is
+ready. Use `/health` for liveness and `/ready` for readiness; `/ready` returns
+HTTP 503 with safe checks and warnings when the database, LLM configuration, or
+persistence setup is not production-ready.
+
+The Vercel dashboard must also have a real `OPENAI_API_KEY` (or a configured
+OpenAI-compatible provider) for AI generation. Never add that key to frontend
+variables or commit it to the repository. For persistent user records, run the
+FastAPI backend on a host with durable storage or migrate the persistence layer
+to a managed database before treating direct serverless SQLite as production
+storage.
 
 ### Google Cloud Console
 

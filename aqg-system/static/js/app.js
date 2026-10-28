@@ -173,8 +173,18 @@ async function refreshStatus() {
     applyBrand(status);
 
     const database = status.services?.database?.status || 'unknown';
-    const online = database === 'online';
-    setStatusIndicator(online ? 'online' : 'degraded', online ? 'All systems online' : 'Database degraded');
+    const generation = status.services?.llm?.status || 'unknown';
+    const persistence = status.services?.database?.persistence || 'unknown';
+
+    if (database !== 'online') {
+      setStatusIndicator('degraded', 'Database degraded');
+    } else if (persistence === 'ephemeral') {
+      setStatusIndicator('degraded', 'Data may not persist');
+    } else if (generation !== 'configured') {
+      setStatusIndicator('degraded', 'AI generation needs setup');
+    } else {
+      setStatusIndicator('online', 'All systems online');
+    }
   } catch (error) {
     setStatusIndicator('degraded', 'Server unreachable');
     // Only surface connectivity problems once the user is already in the app.

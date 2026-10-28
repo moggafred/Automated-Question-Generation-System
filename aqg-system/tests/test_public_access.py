@@ -27,11 +27,24 @@ def test_status_is_public_for_anonymous_visitors():
     body = response.json()
     # The public dashboard renders real platform facts from this payload.
     assert "services" in body
+    assert body["readiness"]["status"] in {"ready", "degraded"}
     assert isinstance(body.get("question_types"), list)
 
 
 def test_health_is_public():
     assert _client().get("/health").status_code == 200
+
+
+def test_readiness_warns_about_serverless_sqlite(monkeypatch):
+    monkeypatch.setenv("VERCEL", "1")
+
+    response = _client().get("/ready")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["status"] == "degraded"
+    assert body["checks"]["persistence"] == "ephemeral"
+    assert any("not guaranteed to persist" in warning for warning in body["warnings"])
 
 
 def test_index_shell_serves_the_public_dashboard():

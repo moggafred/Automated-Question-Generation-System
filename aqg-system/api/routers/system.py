@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 
 from api.security import get_optional_user, require_user
 from config.settings import settings
@@ -25,10 +27,55 @@ logger = logging.getLogger("aqg.api.system")
 router = APIRouter(tags=["system"])
 
 
+async def _service_state(user_id: str | None = None) -> tuple[dict, bool, bool]:
+    try:
+        statistics = await async_get_platform_statistics(user_id=user_id)
+        database_ok = True
+    except Exception as exc:  # noqa: BLE001 - report readiness without leaking internals
+        statistics = {}
+        database_ok = False
+        logger.warning("Status check could not read the database: %s", exc)
+
+    ephemeral_storage = os.getenv("VERCEL") == "1"
+    return statistics, database_ok, ephemeral_storage
+
+
+def _readiness(database_ok: bool, ephemeral_storage: bool) -> dict:
+    checks = {
+        "database": "online" if database_ok else "degraded",
+        "generation": "configured" if settings.llm_configured else "not_configured",
+        "persistence": "ephemeral" if ephemeral_storage else "local_file",
+    }
+    warnings = []
+    if not database_ok:
+        warnings.append("The database is unavailable; saved data cannot be read or written.")
+    if not settings.llm_configured:
+        warnings.append("AI generation is unavailable until an LLM provider is configured.")
+    if ephemeral_storage:
+        warnings.append(
+            "SQLite on Vercel Functions is temporary; saved data is not guaranteed to persist between invocations."
+        )
+
+    ready = database_ok and settings.llm_configured and not ephemeral_storage
+    return {
+        "status": "ready" if ready else "degraded",
+        "checks": checks,
+        "warnings": warnings,
+    }
+
+
 @router.get("/health", summary="Liveness probe")
 async def health_check() -> dict:
     """Reports service liveness. Never touches the database, so it stays cheap."""
     return {"status": "ok"}
+
+
+@router.get("/ready", summary="Readiness probe")
+async def readiness_check():
+    """Reports whether persistent storage and AI generation are ready."""
+    _, database_ok, ephemeral_storage = await _service_state()
+    report = _readiness(database_ok, ephemeral_storage)
+    return JSONResponse(status_code=200 if report["status"] == "ready" else 503, content=report)
 
 
 @router.get("/api/status", summary="API and service status")
@@ -40,16 +87,12 @@ async def platform_status(
     Only booleans and safe values are returned; secrets are never echoed. When a
     caller is signed in, the embedded statistics are scoped to their own data.
     """
-    try:
-        statistics = await async_get_platform_statistics(user_id=user.id if user else None)
-        database_ok = True
-    except Exception as exc:  # noqa: BLE001 - surfaced as a degraded flag, not a 500
-        statistics = {}
-        database_ok = False
-        logger.warning("Status check could not read the database: %s", exc)
+    statistics, database_ok, ephemeral_storage = await _service_state(user.id if user else None)
+    readiness = _readiness(database_ok, ephemeral_storage)
 
     return {
         "status": "ok",
+        "readiness": readiness,
         "app_name": settings.APP_NAME,
         "app_tagline": settings.APP_TAGLINE,
         "version": settings.APP_VERSION,
@@ -58,6 +101,7 @@ async def platform_status(
             "database": {
                 "status": "online" if database_ok else "degraded",
                 "path": settings.DATABASE_PATH,
+                "persistence": "ephemeral" if ephemeral_storage else "local_file",
             },
             "llm": {
                 "status": "configured" if settings.llm_configured else "using placeholder credentials",

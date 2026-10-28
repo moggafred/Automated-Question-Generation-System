@@ -43,6 +43,7 @@ STATIC_DIR = PROJECT_ROOT / "static"
 #: A page load pulls in the shell plus ~20 modules, which must not eat the API budget.
 RATE_LIMIT_EXEMPT_PREFIXES = (
     "/health",
+    "/ready",
     "/api/status",
     "/docs",
     "/redoc",
